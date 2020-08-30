@@ -1,10 +1,12 @@
+@using jpf-symbc
+
 classpath = ${jpf-symbc}/build/examples
 sourcepath = ${jpf-symbc}/src/examples
 
 target = simple.Branches
 symbolic.method = simple.Branches.branch(sym#sym)
-symbolic.minint=-100
-symbolic.maxint=100
+symbolic.min_int=-100
+symbolic.max_int=100
 
 symbolic.green = true
 green.taskmanager = za.ac.sun.cs.green.taskmanager.ParallelTaskManager

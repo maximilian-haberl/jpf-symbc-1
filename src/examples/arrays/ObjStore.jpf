@@ -1,3 +1,5 @@
+@using jpf-symbc
+
 target = arrays.Arrays
 
 symbolic.method=arrays.Arrays.obj_store(con#sym)

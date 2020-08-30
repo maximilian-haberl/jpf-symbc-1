@@ -1,3 +1,5 @@
+@using jpf-symbc
+
 target = uberlazy.TestDriver00
 
 classpath = ${jpf-symbc}/build/examples

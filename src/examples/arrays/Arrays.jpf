@@ -1,5 +1,8 @@
+@using jpf-symbc
+
 target = arrays.Arrays
 
+# listener = gov.nasa.jpf.symbc.SymbolicListener
 symbolic.method=arrays.Arrays.counter(sym#sym)
 symbolic.lazy=on
 classpath=${jpf-symbc}/build/examples

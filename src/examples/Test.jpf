@@ -1,3 +1,5 @@
+@using jpf-symbc
+
 target=Test
 classpath=${jpf-symbc}/build/examples
 sourcepath=${jpf-symbc}/src/examples

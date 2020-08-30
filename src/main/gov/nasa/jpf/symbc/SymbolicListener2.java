@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and 
  * limitations under the License.
  */
-
 package gov.nasa.jpf.symbc;
 
 import java.util.Map;
@@ -24,6 +23,8 @@ import java.util.concurrent.BlockingQueue;
 import gov.nasa.jpf.Config;
 import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.PropertyListenerAdapter;
+import gov.nasa.jpf.report.ConsolePublisher;
+import gov.nasa.jpf.report.Publisher;
 import gov.nasa.jpf.search.Search;
 import gov.nasa.jpf.symbc.concolic.PCAnalyzer;
 import gov.nasa.jpf.symbc.numeric.PCChoiceGenerator;
@@ -34,75 +35,102 @@ import gov.nasa.jpf.vm.ChoiceGenerator;
 import gov.nasa.jpf.vm.MethodInfo;
 import gov.nasa.jpf.vm.ThreadInfo;
 import gov.nasa.jpf.vm.VM;
+import java.io.PrintWriter;
+import java.util.concurrent.LinkedBlockingDeque;
 
 public class SymbolicListener2 extends PropertyListenerAdapter {
 
-    BlockingQueue<Pair<PathCondition, Map<String, Object>>> pcAndSolutionQueue;
+  BlockingQueue<Pair<PathCondition, Map<String, Object>>> pcAndSolutionQueue;
 
-    private String targetMethodName;
+  private String targetMethodName;
 
-    public SymbolicListener2(Config conf, JPF jpf, BlockingQueue<Pair<PathCondition, Map<String, Object>>> pcAndSolutionQueue) {
-        targetMethodName = conf.getProperty("symbolic.method").substring(0, conf.getProperty("symbolic.method").indexOf("("));
-        this.pcAndSolutionQueue = pcAndSolutionQueue;
+  public SymbolicListener2(Config conf, JPF jpf, BlockingQueue<Pair<PathCondition, Map<String, Object>>> pcAndSolutionQueue) {
+    targetMethodName = conf.getProperty("symbolic.method").substring(0, conf.getProperty("symbolic.method").indexOf("("));
+    this.pcAndSolutionQueue = pcAndSolutionQueue;
+  }
+
+  public SymbolicListener2(Config conf, JPF jpf) {
+    targetMethodName = conf.getProperty("symbolic.method").substring(0, conf.getProperty("symbolic.method").indexOf("("));
+    jpf.addPublisherExtension(ConsolePublisher.class, this);
+    this.pcAndSolutionQueue = new LinkedBlockingDeque<Pair<PathCondition, Map<String, Object>>>();
+  }
+
+  @Override
+  public void methodExited(VM vm, ThreadInfo currentThread, MethodInfo exitedMethod) {
+    String currentMethod = exitedMethod.getFullName().substring(0, exitedMethod.getFullName().indexOf("("));
+    if (currentMethod.equals(targetMethodName)) {
+      ChoiceGenerator<?> cg = vm.getChoiceGenerator();
+      if (!(cg instanceof PCChoiceGenerator)) {
+        ChoiceGenerator<?> prev_cg = cg.getPreviousChoiceGenerator();
+        while (!((prev_cg == null) || (prev_cg instanceof PCChoiceGenerator))) {
+          prev_cg = prev_cg.getPreviousChoiceGenerator();
+        }
+        cg = prev_cg;
+      }
+      if ((cg instanceof PCChoiceGenerator) && ((PCChoiceGenerator) cg).getCurrentPC() != null) {
+        PathCondition pc = ((PCChoiceGenerator) cg).getCurrentPC();
+        handleNewPathCondition(pc);
+      }
+    }
+  }
+
+  @Override
+  public void propertyViolated(Search search) {
+
+    VM vm = search.getVM();
+
+    ChoiceGenerator<?> cg = vm.getChoiceGenerator();
+    if (!(cg instanceof PCChoiceGenerator)) {
+      ChoiceGenerator<?> prev_cg = cg.getPreviousChoiceGenerator();
+      while (!((prev_cg == null) || (prev_cg instanceof PCChoiceGenerator))) {
+        prev_cg = prev_cg.getPreviousChoiceGenerator();
+      }
+      cg = prev_cg;
+    }
+    if ((cg instanceof PCChoiceGenerator) && ((PCChoiceGenerator) cg).getCurrentPC() != null) {
+      PathCondition pc = ((PCChoiceGenerator) cg).getCurrentPC();
+      handleNewPathCondition(pc);
+    }
+  }
+
+  private void handleNewPathCondition(PathCondition pc) {
+    boolean sat;
+    if (SymbolicInstructionFactory.concolicMode) { // TODO: cleaner
+      SymbolicConstraintsGeneral solver = new SymbolicConstraintsGeneral();
+      PCAnalyzer pa = new PCAnalyzer();
+      sat = pa.solve(pc, solver);
+    } else {
+      sat = pc.solve();
     }
 
-    @Override
-    public void methodExited(VM vm, ThreadInfo currentThread, MethodInfo exitedMethod) {
-        String currentMethod = exitedMethod.getFullName().substring(0, exitedMethod.getFullName().indexOf("("));
-        if (currentMethod.equals(targetMethodName)) {
-            ChoiceGenerator<?> cg = vm.getChoiceGenerator();
-            if (!(cg instanceof PCChoiceGenerator)) {
-                ChoiceGenerator<?> prev_cg = cg.getPreviousChoiceGenerator();
-                while (!((prev_cg == null) || (prev_cg instanceof PCChoiceGenerator))) {
-                    prev_cg = prev_cg.getPreviousChoiceGenerator();
-                }
-                cg = prev_cg;
-            }
-            if ((cg instanceof PCChoiceGenerator) && ((PCChoiceGenerator) cg).getCurrentPC() != null) {
-                PathCondition pc = ((PCChoiceGenerator) cg).getCurrentPC();
-                handleNewPathCondition(pc);
-            }
-        }
+    Map<String, Object> solution = null;
+    if (sat) {
+      solution = pc.solveWithValuation();
     }
-
-    @Override
-    public void propertyViolated(Search search) {
-
-        VM vm = search.getVM();
-
-        ChoiceGenerator<?> cg = vm.getChoiceGenerator();
-        if (!(cg instanceof PCChoiceGenerator)) {
-            ChoiceGenerator<?> prev_cg = cg.getPreviousChoiceGenerator();
-            while (!((prev_cg == null) || (prev_cg instanceof PCChoiceGenerator))) {
-                prev_cg = prev_cg.getPreviousChoiceGenerator();
-            }
-            cg = prev_cg;
-        }
-        if ((cg instanceof PCChoiceGenerator) && ((PCChoiceGenerator) cg).getCurrentPC() != null) {
-            PathCondition pc = ((PCChoiceGenerator) cg).getCurrentPC();
-            handleNewPathCondition(pc);
-        }
+    if (solution != null) {
+      try {
+        pcAndSolutionQueue.put(new Pair<>(pc, solution));
+      } catch (InterruptedException e) {
+        e.printStackTrace();
+      }
     }
-    
-    private void handleNewPathCondition(PathCondition pc) {
-        boolean sat;
-        if (SymbolicInstructionFactory.concolicMode) { // TODO: cleaner
-            SymbolicConstraintsGeneral solver = new SymbolicConstraintsGeneral();
-            PCAnalyzer pa = new PCAnalyzer();
-            sat = pa.solve(pc, solver);
-        } else
-            sat = pc.solve();
-        
-        Map<String, Object> solution = null;
-        if (sat) {
-            solution = pc.solveWithValuation();
-        }
-        if (solution != null) {
-            try {
-                pcAndSolutionQueue.put(new Pair<>(pc, solution));
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
+  }
+
+  @Override
+  public void publishFinished(Publisher publisher) {
+    PrintWriter pw = publisher.getOut();
+
+    publisher.publishTopicStart("Method Summary");
+
+    for (Pair<PathCondition, Map<String, Object>> pair : pcAndSolutionQueue) {
+      pw.append("Current PC:\n");//.println(pair._1);
+
+      for (Map.Entry<String, Object> entry : pair._2.entrySet()) {
+        String key = entry.getKey();
+        Object val = entry.getValue();
+        pw.append(key).append(":\t").println(val);
+      }
     }
+  }
+
 }

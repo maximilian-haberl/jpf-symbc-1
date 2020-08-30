@@ -1,3 +1,5 @@
+@using jpf-symbc
+
 target=demo.NumericExample
 classpath=${jpf-symbc}/build/examples
 sourcepath=${jpf-symbc}/src/examples
