@@ -129,6 +129,7 @@ public class SymbolicListener2 extends PropertyListenerAdapter {
         String key = entry.getKey();
         Object val = entry.getValue();
         pw.append(key).append(":\t").println(val);
+        //pw.println(val.getClass().getCanonicalName());
       }
     }
   }

@@ -1,3 +1,5 @@
+@using jpf-symbc
+
 target = doublyNested.Test
 
 classpath = ${jpf-symbc}/build/examples

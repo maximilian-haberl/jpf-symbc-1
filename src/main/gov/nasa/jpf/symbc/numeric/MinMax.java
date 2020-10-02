@@ -112,7 +112,7 @@ public class MinMax {
 	/**
 	 * Lower bound on symbolic real variables.
 	 */
-	private static double minDouble = Double.MIN_VALUE; //-8;
+	private static double minDouble = -Double.MAX_VALUE; //-8;
 
 	/**
 	 * Upper bound on symbolic real variables.

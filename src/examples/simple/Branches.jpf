@@ -9,7 +9,7 @@ symbolic.min_int=-100
 symbolic.max_int=100
 
 symbolic.green = true
-green.taskmanager = za.ac.sun.cs.green.taskmanager.ParallelTaskManager
+green.taskmanager = za.ac.sun.cs.green.taskmanager.SerialTaskManager
 green.store = za.ac.sun.cs.green.store.redis.RedisStore
 green.services = sat
 green.service.sat = (slice (canonize choco cvc3))

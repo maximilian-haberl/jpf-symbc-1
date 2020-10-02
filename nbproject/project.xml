@@ -221,37 +221,37 @@
             </view>
             <subprojects/>
         </general-data>
-        <java-data xmlns="http://www.netbeans.org/ns/freeform-project-java/2">
+        <java-data xmlns="http://www.netbeans.org/ns/freeform-project-java/4">
             <compilation-unit>
                 <package-root>src/main</package-root>
                 <classpath mode="compile">${jpf-symbc.native_classpath};${jpf-core.native_classpath}</classpath>
-                <source-level>1.5</source-level>
+                <source-level>1.8</source-level>
             </compilation-unit>
             <compilation-unit>
                 <package-root>src/peers</package-root>
                 <classpath mode="compile">build/main;${jpf-symbc.native_classpath};${jpf-core.native_classpath}</classpath>
-                <source-level>1.5</source-level>
+                <source-level>1.8</source-level>
             </compilation-unit>
             <compilation-unit>
                 <package-root>src/classes</package-root>
                 <classpath mode="compile">${jpf-core.native_classpath}</classpath>
-                <source-level>1.5</source-level>
+                <source-level>1.8</source-level>
             </compilation-unit>
             <compilation-unit>
                 <package-root>src/annotations</package-root>
-                <source-level>1.5</source-level>
+                <source-level>1.8</source-level>
             </compilation-unit>
             <compilation-unit>
                 <package-root>src/tests</package-root>
                 <unit-tests/>
                 <classpath mode="compile">build/classes;build/annotations;${jpf-symbc.native_classpath};${jpf-core.native_classpath}</classpath>
-                <source-level>1.5</source-level>
+                <source-level>1.8</source-level>
             </compilation-unit>
             <compilation-unit>
                 <package-root>src/examples</package-root>
                 <unit-tests/>
                 <classpath mode="compile">build/classes;build/annotations;${jpf-symbc.native_classpath};${jpf-core.native_classpath}</classpath>
-                <source-level>1.5</source-level>
+                <source-level>1.8</source-level>
             </compilation-unit>
         </java-data>
         <preferences xmlns="http://www.netbeans.org/ns/auxiliary-configuration-preferences/1">

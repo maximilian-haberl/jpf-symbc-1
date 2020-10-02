@@ -248,13 +248,14 @@ public class BytecodeUtils {
             LocalVarInfo[] argsInfo = mi.getArgumentLocalVars();
 
             int localVarsIdx = 0;
+            if (!mi.isStatic()) {
+              localVarsIdx = 1;
+            }
             // if debug option was not used when compiling the class,
             // then we do not have names of the locals
 
-            if (argsInfo != null) {
-                localVarsIdx = (isStatic ? 0 : 1); // Skip over "this" argument when non-static
-            } else {
-                throw new RuntimeException("ERROR: you need to turn debug option on");
+            if (argsInfo == null && mi.getNumberOfArguments() > localVarsIdx) {
+              throw new RuntimeException("ERROR: you need to turn debug option on");
             }
             Map<String, Expression> expressionMap = new HashMap<String, Expression>();
 
