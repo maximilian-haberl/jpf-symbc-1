@@ -107,23 +107,22 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     PCChoiceGenerator pccg = vm.getLastChoiceGeneratorOfType(PCChoiceGenerator.class);
     if (pccg == null || pccg.getCurrentPC() == null) {
       if (logger.isLoggable(Level.WARNING)) {
-        logger.log(Level.WARNING, "No path condition for "+ mi.getBaseName());
+        logger.log(Level.WARNING, "No path condition for " + mi.getBaseName());
       }
       return;
     }
 
     PathCondition pc = pccg.getCurrentPC();
     pc.solve();
-    
+
     if (logger.isFinerLogged()) {
       logger.finer(pc);
     }
-    
+
     TestCase test = new TestCase(mi);
     test.args.putAll(summary.concreteArgs);
 
     for (LocalVarInfo var : summary.symbolicArgs) {
-
       //converting the solution into the correct type
       switch (Types.getTypeCode(var.getSignature())) {
         case Types.T_BYTE:
@@ -231,9 +230,78 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   @Override
   public void exceptionThrown(VM vm, ThreadInfo currentThread, ElementInfo thrownException) {
+    StackFrame frame = currentThread.getModifiableTopFrame();
+    MethodInfo mi = currentThread.getTopFrameMethodInfo();
+
+    ArgumentSummary summary = frame.getFrameAttr(ArgumentSummary.class);
+
     //check if the exception was thrown in the symbolic method
-    //get last symbolic CG
-    //get and save pathcondition   
+    if (summary != null) {
+      //get last symbolic CG
+      PCChoiceGenerator pccg = vm.getLastChoiceGeneratorOfType(PCChoiceGenerator.class);
+      if (pccg == null && logger.isLoggable(Level.FINE)) {
+        logger.log(Level.FINE, "No path condition for exception in {0}", mi.getLongName());
+        return;
+      }
+
+      //get and save pathcondition
+      PathCondition pc = pccg.getCurrentPC();
+
+      if (pc.solve()) {
+        TestCase test = new TestCase(mi);
+        test.args.putAll(summary.concreteArgs);
+
+        //TODO put in its own method
+        for (LocalVarInfo var : summary.symbolicArgs) {
+          //converting the solution into the correct type
+          switch (Types.getTypeCode(var.getSignature())) {
+            case Types.T_BYTE:
+            case Types.T_CHAR:
+            case Types.T_SHORT:
+            case Types.T_INT:
+            case Types.T_LONG:
+              //solution returns a long, which is fine for every integer type
+              IntegerExpression integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
+              test.args.put(var, integer.solution());
+              break;
+
+            case Types.T_FLOAT:
+            case Types.T_DOUBLE:
+              RealExpression real = frame.getLocalAttr(var.getSlotIndex(), RealExpression.class);
+              test.args.put(var, real.solution());
+              break;
+
+            case Types.T_BOOLEAN:
+              integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
+              boolean boolVal = integer.solution() == 1;
+              test.args.put(var, boolVal);
+              break;
+
+            case Types.T_VOID:
+            case Types.T_NONE:
+              //TODO this is an error condition
+              break;
+
+            case Types.T_ARRAY:
+            case Types.T_REFERENCE:
+              //TODO handle references
+              break;
+
+            default:
+            //Do nothing
+          }
+        }
+
+        test.didThrow = true;
+        //for maximum information we just attach the ElementInfo object of the thrown exception as the return value
+        test.returnValue = thrownException;
+
+      } else {
+        //TODO
+        System.out.println("Could not solve PC when an exception was thrown!");
+      }
+    }
+
   }
 
   @Override
@@ -251,11 +319,12 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     publisher.publishTopicEnd("Test cases");
   }
 
+  /*
   @Override
   public void vmInitialized(VM vm) {
     System.out.println(String.join(", ", SymbolicInstructionFactory.dp));
   }
-
+   */
   private class ArgumentSummary {
 
     /**
@@ -286,10 +355,12 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     public Map<LocalVarInfo, Object> args;
     public MethodInfo method;
     public Object returnValue;
+    public boolean didThrow;
 
     public TestCase(MethodInfo mi) {
       args = new HashMap<>();
       this.method = mi;
+      didThrow = false;
     }
 
     /**
@@ -329,5 +400,36 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       pw.println("}");
     }
+  }
+
+  private interface TestcaseFormatter {
+
+    /**
+     * Creates a String representation of the given test case and prints it to the PrintWriter pw
+     * @param testCase test case that should be formatted
+     * @param pw PrintWriter the test case should be written to
+     */
+    public void format(TestCase test, PrintWriter pw);
+
+    /**
+     * Creates and returns a String representation of the given test case
+     * @param test test case that should be formatted
+     * @return String representation of the test case
+     */
+    public String format(TestCase test);
+  }
+  
+  private class TestCaseFormatterImpl implements TestcaseFormatter{
+
+    @Override
+    public void format(TestCase test, PrintWriter pw) {
+      throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+    }
+
+    @Override
+    public String format(TestCase test) {
+      throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+    }
+    
   }
 }
