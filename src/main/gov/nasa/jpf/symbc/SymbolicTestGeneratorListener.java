@@ -25,13 +25,11 @@ import gov.nasa.jpf.vm.StackFrame;
 import gov.nasa.jpf.vm.Types;
 import gov.nasa.jpf.vm.VM;
 import java.io.PrintWriter;
-import java.lang.reflect.Constructor;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  *
@@ -109,15 +107,22 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     PCChoiceGenerator pccg = vm.getLastChoiceGeneratorOfType(PCChoiceGenerator.class);
     if (pccg == null || pccg.getCurrentPC() == null) {
-      if (logger.isLoggable(Level.WARNING)) {
-        logger.log(Level.WARNING, "No path condition for " + mi.getBaseName());
+      if (logger.isLoggable(Level.FINE)) {
+        logger.log(Level.FINE, "No path condition for " + mi.getBaseName());
       }
       return;
     }
 
     PathCondition pc = pccg.getCurrentPC();
-    pc.solve();
+    if (!pc.solve()) {
+      if (logger.isFineLogged()) {
+        logger.fine("Path condition could not be solved:");
+        logger.fine(pc);
+      }
+      return;
+    }
 
+    //logging the path condition at a very low level
     if (logger.isFinerLogged()) {
       logger.finer(pc);
     }
@@ -226,11 +231,25 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     if (optimize) {
       //we dont want to run everything after this method every time
+      boolean ignore = false;
+
+      //check if there is any other PCChoiceGenerator which has choices remaining
       for (ChoiceGenerator cg : vm.getChoiceGeneratorsOfType(PCChoiceGenerator.class)) {
         if (cg.hasMoreChoices()) {
-          vm.getSystemState().setIgnored(true);
+          ignore = true;
         }
       }
+
+      //check if there is another symbolic method that (in)directly called this method
+      //in that case we have to continue execution, as the method that called us has not returned yet
+      while (frame.getPrevious() != null) {
+        frame = frame.getPrevious();
+        if (frame.hasFrameAttr(ArgumentSummary.class)) {
+          ignore = false;
+        }
+      }
+
+      vm.getSystemState().setIgnored(ignore);
     }
   }
 
@@ -245,8 +264,10 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     if (summary != null) {
       //get last symbolic CG
       PCChoiceGenerator pccg = vm.getLastChoiceGeneratorOfType(PCChoiceGenerator.class);
-      if (pccg == null && logger.isLoggable(Level.FINE)) {
-        logger.log(Level.FINE, "No path condition for exception in {0}", mi.getLongName());
+      if (pccg == null) {
+        if (logger.isLoggable(Level.FINE)) {
+          logger.log(Level.FINE, "No path condition for exception in {0}", mi.getLongName());
+        }
         return;
       }
 
