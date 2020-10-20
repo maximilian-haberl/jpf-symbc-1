@@ -13,6 +13,8 @@ import gov.nasa.jpf.symbc.numeric.IntegerExpression;
 import gov.nasa.jpf.symbc.numeric.PCChoiceGenerator;
 import gov.nasa.jpf.symbc.numeric.PathCondition;
 import gov.nasa.jpf.symbc.numeric.RealExpression;
+import gov.nasa.jpf.symbc.numeric.SymbolicInteger;
+import gov.nasa.jpf.symbc.numeric.SymbolicReal;
 import gov.nasa.jpf.util.JPFLogger;
 import gov.nasa.jpf.vm.ChoiceGenerator;
 import gov.nasa.jpf.vm.ClassInfo;
@@ -41,12 +43,14 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
   private Map<MethodInfo, List<TestCase>> models;
   private final JPFLogger logger = JPF.getLogger("gov.nasa.jpf.symbc.SymbolicTestGeneratorListener");
   private boolean optimize;
+  private boolean fullArgs;
 
   public SymbolicTestGeneratorListener(Config conf, JPF jpf) {
     //fetching an optional abbreviation
     String abbreviation = conf.getString("SymbolicTestGeneratorListener.abbreviation", "SymbolicTestGeneratorListener");
 
     optimize = conf.getBoolean(abbreviation + ".optimize", false);
+    fullArgs = conf.getBoolean(abbreviation + ".fullArgs", false);
 
     jpf.addPublisherExtension(ConsolePublisher.class, this);
     models = new HashMap<>();
@@ -129,6 +133,11 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     }
 
     TestCase test = setArguments(summary, frame);
+
+    Expression returnExpression = ret.getReturnAttr(currentThread, Expression.class);
+    if (returnExpression != null) {
+      System.out.println("Return expression: " + returnExpression);
+    }
 
     switch (mi.getReturnTypeCode()) {
       //a lot of fallthrough because all integers are handled the same
@@ -228,6 +237,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       if (handler != null) {
         caught = true;
+        System.out.println(String.format("Caught %s in %s", exceptionInfo.getName(), mi.getLongName()));
       } else if (frame.hasFrameAttr(ArgumentSummary.class)) {
         symbolicFrames.add(frame);
       }
@@ -269,7 +279,8 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     //TODO put in its own method
     for (LocalVarInfo var : summary.symbolicArgs) {
       //converting the solution into the correct type
-      switch (Types.getTypeCode(var.getSignature())) {
+      byte type = Types.getTypeCode(var.getSignature());
+      switch (type) {
         case Types.T_BYTE:
         case Types.T_CHAR:
         case Types.T_SHORT:
@@ -277,13 +288,23 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         case Types.T_LONG:
           //solution returns a long, which is fine for every integer type
           IntegerExpression integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
-          test.args.put(var, integer.solution());
+          long integerSolution = integer.solution();
+          if (integerSolution == SymbolicInteger.UNDEFINED) {
+            test.args.put(var, getDefault(type));
+          } else {
+            test.args.put(var, integerSolution);
+          }
           break;
 
         case Types.T_FLOAT:
         case Types.T_DOUBLE:
           RealExpression real = frame.getLocalAttr(var.getSlotIndex(), RealExpression.class);
-          test.args.put(var, real.solution());
+          double realSolution = real.solution();
+          if (realSolution == SymbolicReal.UNDEFINED) {
+            test.args.put(var, getDefault(type));
+          } else {
+            test.args.put(var, real.solution());
+          }
           break;
 
         case Types.T_BOOLEAN:
@@ -316,6 +337,33 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     }
 
     models.get(test.method).add(test);
+  }
+
+  private Object getDefault(byte type) {
+    switch (type) {
+      case Types.T_BYTE:
+      case Types.T_CHAR:
+      case Types.T_SHORT:
+      case Types.T_INT:
+      case Types.T_LONG:
+        return 0;
+
+      case Types.T_FLOAT:
+      case Types.T_DOUBLE:
+        return 0.0;
+
+      case Types.T_BOOLEAN:
+        return false;
+
+      case Types.T_REFERENCE:
+      case Types.T_ARRAY:
+        //returning actual null would be bad, because we want the string representation
+        return null;
+
+      default:
+        //this catches T_VOID, T_NONE or any other byte; All of them are error conditions
+        throw new IllegalArgumentException();
+    }
   }
 
   @Override
@@ -392,44 +440,6 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       this.method = mi;
       didThrow = false;
     }
-
-    /**
-     * Only works for static methods
-     *
-     * @param pw
-     * @param number
-     */
-    public void format(PrintWriter pw, int number) {
-      //test declaration
-      pw.println("@Test");
-      pw.print("public void ");
-      pw.append(method.getName()).append("Test").append(Integer.toString(number)).append("(){");
-      pw.println();
-
-      //expected result
-      pw.append('\t').append(method.getReturnTypeName()).append(" expected = ").append(returnValue.toString());
-      pw.println(";");
-
-      //actual result
-      pw.append('\t').append(method.getReturnTypeName()).append(" result = ");
-
-      //call
-      pw.append(method.getName()).append("(");
-      LocalVarInfo[] lvi = method.getArgumentLocalVars();
-      for (int i = 0; i < lvi.length; i++) {
-        LocalVarInfo var = lvi[i];
-        if (i != 0) {
-          pw.append(", ");
-        }
-        pw.print(args.get(var));
-      }
-      pw.println(");");
-
-      //Assertion
-      pw.println("\tassertEquals(expected, result);");
-
-      pw.println("}");
-    }
   }
 
   private interface TestcaseFormatter {
@@ -472,12 +482,12 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     @Override
     public void format(TestCase test, PrintWriter pw) {
-      pw.append(getBuilder(test));
+      pw.append(formatInstance(test));
     }
 
     @Override
     public String format(TestCase test) {
-      return getBuilder(test).toString();
+      return formatInstance(test).toString();
     }
 
     private StringBuilder getBuilder(TestCase test) {
@@ -504,6 +514,33 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       builder.append(")");
 
       return builder;
+    }
+
+    private StringBuilder formatComment(StringBuilder builder, TestCase test) {
+      builder.append("\"");
+      builder.append("Ein Test für die Methode ").append(test.method.getName()).append(" ist fehlgeschlagen.");
+
+      if (fullArgs) {
+        //append the values of all variables
+        builder.append(" Input:\\n");
+
+        int start = 0;
+        if (!test.method.isStatic()) {
+          start = 1;
+        }
+
+        LocalVarInfo[] lvi = test.method.getArgumentLocalVars();
+        for (int i = 0; i < lvi.length; i++) {
+          LocalVarInfo var = lvi[i];
+          if (i > start) {
+            builder.append("\\n");
+          }
+
+          builder.append(var.getName()).append(":\\t").append(test.args.get(var));
+        }
+      }
+
+      return builder.append("\"");
     }
 
     private StringBuilder formatInstance(TestCase test) {
