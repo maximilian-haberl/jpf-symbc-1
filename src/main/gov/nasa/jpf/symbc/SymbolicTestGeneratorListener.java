@@ -134,9 +134,13 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     TestCase test = setArguments(summary, frame);
 
-    Expression returnExpression = ret.getReturnAttr(currentThread, Expression.class);
-    if (returnExpression != null) {
-      System.out.println("Return expression: " + returnExpression);
+    //TODO: remove
+    System.out.println(mi.getReturnTypeName());
+    if (!mi.getReturnTypeName().equalsIgnoreCase("void")) {
+      Expression returnExpression = ret.getReturnAttr(currentThread, Expression.class);
+      if (returnExpression != null) {
+        System.out.println("Return expression: " + returnExpression);
+      }
     }
 
     switch (mi.getReturnTypeCode()) {
@@ -471,10 +475,13 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     public JUnit5Formatter() {
       indentations = new ArrayList<>();
+      initIndents(10);
+    }
+    
+    private final void initIndents(int amount){
       String indent = "";
 
-      //filling the list for the most common indentations
-      for (int i = 0; i < 10; i++) {
+      for (int i = 0; i < amount; i++) {
         indentations.add(indent);
         indent += TAB;
       }
@@ -488,10 +495,6 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     @Override
     public String format(TestCase test) {
       return formatInstance(test).toString();
-    }
-
-    private StringBuilder getBuilder(TestCase test) {
-      return formatInstance(test);
     }
 
     private StringBuilder formatCall(TestCase test, StringBuilder builder) {
@@ -572,7 +575,9 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         if (dynamic) {
           builder.append("instance.");
         }
-        formatCall(test, builder).append("}").append(NL);
+        formatCall(test, builder).append("},").append(NL);
+        ensureIndentation(builder, indent+2);
+        formatComment(builder, test).append(NL);
         ensureIndentation(builder, indent).append(");").append(NL);
       } else if (test.method.getReturnTypeCode() != Types.T_VOID) {
         //non void method that did not throw an exception
@@ -584,7 +589,9 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         }
         formatCall(test, builder).append(";").append(NL);
 
-        ensureIndentation(builder, indent).append("assertEquals(expected, result);").append(NL);
+        ensureIndentation(builder, indent).append("assertEquals(expected, result, ");
+        formatComment(builder, test).append(");").append(NL);
+        
       } else {
         //void method that did not throw an exception
         ensureIndentation(builder, indent);
