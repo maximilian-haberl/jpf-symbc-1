@@ -27,12 +27,16 @@ import gov.nasa.jpf.vm.MethodInfo;
 import gov.nasa.jpf.vm.StackFrame;
 import gov.nasa.jpf.vm.Types;
 import gov.nasa.jpf.vm.VM;
+import java.io.CharArrayWriter;
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.Writer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  *
@@ -469,36 +473,24 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
   private class JUnit5Formatter implements TestcaseFormatter {
 
     private final String NL = System.lineSeparator();
-    private final String TAB = "   ";
     private int testCaseCount = 0;
-    private List<String> indentations;
-
-    public JUnit5Formatter() {
-      indentations = new ArrayList<>();
-      initIndents(10);
-    }
-    
-    private final void initIndents(int amount){
-      String indent = "";
-
-      for (int i = 0; i < amount; i++) {
-        indentations.add(indent);
-        indent += TAB;
-      }
-    }
 
     @Override
     public void format(TestCase test, PrintWriter pw) {
-      pw.append(formatInstance(test));
+      IndentablePrintWriter writer = new IndentablePrintWriter(pw);
+      formatInstance(writer, test);
     }
 
     @Override
     public String format(TestCase test) {
-      return formatInstance(test).toString();
+      CharArrayWriter cw = new CharArrayWriter();
+      IndentablePrintWriter writer = new IndentablePrintWriter(cw);
+      formatInstance(writer, test);
+      return cw.toString();
     }
 
-    private StringBuilder formatCall(TestCase test, StringBuilder builder) {
-      builder.append(test.method.getName()).append("(");
+    private IndentablePrintWriter formatCall(IndentablePrintWriter writer, TestCase test) {
+      writer.append(test.method.getName()).append("(");
       LocalVarInfo[] arguments = test.method.getArgumentLocalVars();
       int start = 0;
 
@@ -509,23 +501,23 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       for (int i = start; i < arguments.length; i++) {
         LocalVarInfo var = arguments[i];
         if (i > start) {
-          builder.append(",");
+          writer.append(",");
         }
-        builder.append(test.args.get(var));
+        writer.append(test.args.get(var));
       }
 
-      builder.append(")");
+      writer.append(")");
 
-      return builder;
+      return writer;
     }
 
-    private StringBuilder formatComment(StringBuilder builder, TestCase test) {
-      builder.append("\"");
-      builder.append("Ein Test für die Methode ").append(test.method.getName()).append(" ist fehlgeschlagen.");
+    private IndentablePrintWriter formatComment(IndentablePrintWriter writer, TestCase test) {
+      writer.append("\"");
+      writer.append("Ein Test für die Methode ").append(test.method.getName()).append(" ist fehlgeschlagen.");
 
       if (fullArgs) {
         //append the values of all variables
-        builder.append(" Input:\\n");
+        writer.append(" Input:\\n");
 
         int start = 0;
         if (!test.method.isStatic()) {
@@ -536,32 +528,33 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         for (int i = 0; i < lvi.length; i++) {
           LocalVarInfo var = lvi[i];
           if (i > start) {
-            builder.append("\\n");
+            writer.append("\\n");
           }
 
-          builder.append(var.getName()).append(":\\t").append(test.args.get(var));
+          writer.append(var.getName()).append(":\\t").append(test.args.get(var));
+
         }
       }
 
-      return builder.append("\"");
+      return writer.append("\"");
     }
 
-    private StringBuilder formatInstance(TestCase test) {
+    private void formatInstance(IndentablePrintWriter writer, TestCase test) {
       StringBuilder builder = new StringBuilder();
       String className = test.method.getClassName();
       boolean dynamic = !test.method.isStatic();
       int indent = 1;
 
-      ensureIndentation(builder, indent).append("//Testing method ").append(test.method.getName()).append(NL);
-      ensureIndentation(builder, indent).append("@Test").append(NL);
+      writer.indent(indent).append("//Testing method ").append(test.method.getName()).append(NL);
+      writer.indent(indent).append("@Test").append(NL);
 
-      ensureIndentation(builder, indent).append("public void test").append(testCaseCount++).append("(){").append(NL);
+      writer.indent(indent).append("public void test").append(testCaseCount++).append("(){").append(NL);
 
       //we are writing the method body now
       indent++;
 
       if (dynamic) {
-        ensureIndentation(builder, indent).append(className).append(" instance = new ").append(className).append("();").append(NL);
+        writer.indent(indent).append(className).append(" instance = new ").append(className).append("();").append(NL);
       }
 
       if (test.didThrow) {
@@ -569,42 +562,67 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         ElementInfo exception = (ElementInfo) test.returnValue;
 
         //formatting the assertThrows
-        ensureIndentation(builder, indent).append("assertThrows(").append(NL);
-        ensureIndentation(builder, indent + 2).append(exception.getClassInfo().getName()).append(".class,").append(NL);
-        ensureIndentation(builder, indent + 2).append("() -> {");
+        writer.indent(indent).append("assertThrows(").append(NL);
+        writer.indent(indent + 2).append(exception.getClassInfo().getName()).append(".class,").append(NL);
+        writer.indent(indent + 2).append("() -> {");
         if (dynamic) {
           builder.append("instance.");
         }
-        formatCall(test, builder).append("},").append(NL);
-        ensureIndentation(builder, indent+2);
-        formatComment(builder, test).append(NL);
-        ensureIndentation(builder, indent).append(");").append(NL);
+        formatCall(writer, test).append("},").append(NL);
+        writer.indent(indent + 2);
+        formatComment(writer, test).append(NL);
+        writer.indent(indent).append(");").append(NL);
       } else if (test.method.getReturnTypeCode() != Types.T_VOID) {
         //non void method that did not throw an exception
-        ensureIndentation(builder, indent).append(test.method.getReturnTypeName()).append(" expected = ").append(test.returnValue).append(";").append(NL);
+        writer.indent(indent).append(test.method.getReturnTypeName()).append(" expected = ").append(test.returnValue).append(";").append(NL);
 
-        ensureIndentation(builder, indent).append(test.method.getReturnTypeName()).append(" result = ");
+        writer.indent(indent).append(test.method.getReturnTypeName()).append(" result = ");
         if (dynamic) {
           builder.append("instance.");
         }
-        formatCall(test, builder).append(";").append(NL);
+        formatCall(writer, test).append(";").append(NL);
 
-        ensureIndentation(builder, indent).append("assertEquals(expected, result, ");
-        formatComment(builder, test).append(");").append(NL);
-        
+        writer.indent(indent).append("assertEquals(expected, result, ");
+        formatComment(writer, test).append(");").append(NL);
+
       } else {
         //void method that did not throw an exception
-        ensureIndentation(builder, indent);
+        writer.indent(indent);
         if (dynamic) {
           builder.append("instance.");
         }
-        formatCall(test, builder).append(";").append(NL);
+        formatCall(writer, test).append(";").append(NL);
       }
 
       //end of method body
       indent--;
-      ensureIndentation(builder, indent).append("}").append(NL).append(NL);
-      return builder;
+      writer.indent(indent).append("}").append(NL).append(NL);
+    }
+
+  }
+
+  private class IndentablePrintWriter extends Writer {
+
+    /**
+     * Defines what a tab is for the indentation feature
+     */
+    private final String TAB = "   ";
+
+    /**
+     * Stores i indentations in the i-th element
+     */
+    private List<String> indentations;
+
+    /**
+     * the wrapped writer
+     */
+    private Writer writer;
+
+    public IndentablePrintWriter(Writer out) {
+      super();
+      indentations = new ArrayList<>();
+      initIndents(10);
+      writer = out;
     }
 
     private String getIndentation(int indents) {
@@ -620,9 +638,57 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       return indentations.get(indents);
     }
 
-    private StringBuilder ensureIndentation(StringBuilder builder, int indents) {
-      return builder.append(getIndentation(indents));
+    private final void initIndents(int amount) {
+      String indent = "";
+
+      for (int i = 0; i < amount; i++) {
+        indentations.add(indent);
+        indent += TAB;
+      }
     }
 
+    public IndentablePrintWriter indent(int amount) {
+      appendPriv(getIndentation(amount));
+      return this;
+    }
+
+    public IndentablePrintWriter append(Object o) {
+      if (o == null) {
+        appendPriv("null");
+      } else {
+        appendPriv(o.toString());
+      }
+
+      return this;
+    }
+
+    @Override
+    public IndentablePrintWriter append(CharSequence csq) {
+      appendPriv(csq);
+      return this;
+    }
+
+    private void appendPriv(CharSequence seq) {
+      try {
+        writer.append(seq);
+      } catch (IOException ex) {
+        Logger.getLogger(SymbolicTestGeneratorListener.class.getName()).log(Level.SEVERE, null, ex);
+      }
+    }
+
+    @Override
+    public void write(char[] chars, int i, int i1) throws IOException {
+      writer.write(chars, i, i1);
+    }
+
+    @Override
+    public void flush() throws IOException {
+      writer.flush();
+    }
+
+    @Override
+    public void close() throws IOException {
+      writer.close();
+    }
   }
 }
