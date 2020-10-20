@@ -17,6 +17,7 @@ import gov.nasa.jpf.util.JPFLogger;
 import gov.nasa.jpf.vm.ChoiceGenerator;
 import gov.nasa.jpf.vm.ClassInfo;
 import gov.nasa.jpf.vm.ElementInfo;
+import gov.nasa.jpf.vm.ExceptionHandler;
 import gov.nasa.jpf.vm.Instruction;
 import gov.nasa.jpf.vm.LocalVarInfo;
 import gov.nasa.jpf.vm.ThreadInfo;
@@ -127,48 +128,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       logger.finer(pc);
     }
 
-    TestCase test = new TestCase(mi);
-    test.args.putAll(summary.concreteArgs);
-
-    for (LocalVarInfo var : summary.symbolicArgs) {
-      //converting the solution into the correct type
-      switch (Types.getTypeCode(var.getSignature())) {
-        case Types.T_BYTE:
-        case Types.T_CHAR:
-        case Types.T_SHORT:
-        case Types.T_INT:
-        case Types.T_LONG:
-          //solution returns a long, which is fine for every integer type
-          IntegerExpression integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
-          test.args.put(var, integer.solution());
-          break;
-
-        case Types.T_FLOAT:
-        case Types.T_DOUBLE:
-          RealExpression real = frame.getLocalAttr(var.getSlotIndex(), RealExpression.class);
-          test.args.put(var, real.solution());
-          break;
-
-        case Types.T_BOOLEAN:
-          integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
-          boolean boolVal = integer.solution() == 1;
-          test.args.put(var, boolVal);
-          break;
-
-        case Types.T_VOID:
-        case Types.T_NONE:
-          //TODO this is an error condition
-          break;
-
-        case Types.T_ARRAY:
-        case Types.T_REFERENCE:
-          //TODO handle references
-          break;
-
-        default:
-        //Do nothing
-      }
-    }
+    TestCase test = setArguments(summary, frame);
 
     switch (mi.getReturnTypeCode()) {
       //a lot of fallthrough because all integers are handled the same
@@ -224,10 +184,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     }
 
-    if (!models.containsKey(mi)) {
-      models.put(mi, new ArrayList<>());
-    }
-    models.get(mi).add(test);
+    addTestCase(test);
 
     if (optimize) {
       //we dont want to run everything after this method every time
@@ -257,82 +214,108 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
   public void exceptionThrown(VM vm, ThreadInfo currentThread, ElementInfo thrownException) {
     StackFrame frame = currentThread.getModifiableTopFrame();
     MethodInfo mi = currentThread.getTopFrameMethodInfo();
+    ClassInfo exceptionInfo = thrownException.getClassInfo();
+    String exceptionName = thrownException.getClassInfo().getName();
 
-    ArgumentSummary summary = frame.getFrameAttr(ArgumentSummary.class);
+    //for the time being, just store all the symbolic frames into a list 
+    List<StackFrame> symbolicFrames = new ArrayList<>();
 
-    //check if the exception was thrown in the symbolic method
-    if (summary != null) {
-      //get last symbolic CG
-      PCChoiceGenerator pccg = vm.getLastChoiceGeneratorOfType(PCChoiceGenerator.class);
-      if (pccg == null) {
-        if (logger.isLoggable(Level.FINE)) {
-          logger.log(Level.FINE, "No path condition for exception in {0}", mi.getLongName());
-        }
-        return;
+    //iterating over all stackframes
+    boolean caught = false;
+    while (!caught && frame != null) {
+      MethodInfo info = frame.getMethodInfo();
+      ExceptionHandler handler = info.getHandlerFor(exceptionInfo, frame.getPC());
+
+      if (handler != null) {
+        caught = true;
+      } else if (frame.hasFrameAttr(ArgumentSummary.class)) {
+        symbolicFrames.add(frame);
       }
 
-      //get and save pathcondition
-      PathCondition pc = pccg.getCurrentPC();
+      frame = frame.getCallerFrame();
+    }
 
-      if (pc.solve()) {
-        TestCase test = new TestCase(mi);
-        test.args.putAll(summary.concreteArgs);
+    //check if we have a path condition
+    PCChoiceGenerator pccg = vm.getLastChoiceGeneratorOfType(PCChoiceGenerator.class);
+    if (pccg == null || pccg.getCurrentPC() == null) {
+      if (logger.isLoggable(Level.FINE)) {
+        logger.log(Level.FINE, "No path condition for exception in {0}", mi.getLongName());
+      }
+      return;
+    }
 
-        //TODO put in its own method
-        for (LocalVarInfo var : summary.symbolicArgs) {
-          //converting the solution into the correct type
-          switch (Types.getTypeCode(var.getSignature())) {
-            case Types.T_BYTE:
-            case Types.T_CHAR:
-            case Types.T_SHORT:
-            case Types.T_INT:
-            case Types.T_LONG:
-              //solution returns a long, which is fine for every integer type
-              IntegerExpression integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
-              test.args.put(var, integer.solution());
-              break;
+    //get and save pathcondition
+    PathCondition pc = pccg.getCurrentPC();
 
-            case Types.T_FLOAT:
-            case Types.T_DOUBLE:
-              RealExpression real = frame.getLocalAttr(var.getSlotIndex(), RealExpression.class);
-              test.args.put(var, real.solution());
-              break;
-
-            case Types.T_BOOLEAN:
-              integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
-              boolean boolVal = integer.solution() == 1;
-              test.args.put(var, boolVal);
-              break;
-
-            case Types.T_VOID:
-            case Types.T_NONE:
-              //TODO this is an error condition
-              break;
-
-            case Types.T_ARRAY:
-            case Types.T_REFERENCE:
-              //TODO handle references
-              break;
-
-            default:
-            //Do nothing
-          }
-        }
-
+    if (pc.solve()) {
+      for (StackFrame symbolicFrame : symbolicFrames) {
+        ArgumentSummary summary = symbolicFrame.getFrameAttr(ArgumentSummary.class);
+        TestCase test = setArguments(summary, symbolicFrame);
         test.didThrow = true;
-        //for maximum information we just attach the ElementInfo object of the thrown exception as the return value
         test.returnValue = thrownException;
+        addTestCase(test);
+      }
+    } else {
+      //TODO
+      System.out.println("Could not solve PC when an exception was thrown!");
+    }
 
-        if (!models.containsKey(mi)) {
-          models.put(mi, new ArrayList<>());
-        }
-        models.get(mi).add(test);
-      } else {
-        //TODO
-        System.out.println("Could not solve PC when an exception was thrown!");
+  }
+
+  private TestCase setArguments(ArgumentSummary summary, StackFrame frame) {
+    TestCase test = new TestCase(frame.getMethodInfo());
+    test.args.putAll(summary.concreteArgs);
+
+    //TODO put in its own method
+    for (LocalVarInfo var : summary.symbolicArgs) {
+      //converting the solution into the correct type
+      switch (Types.getTypeCode(var.getSignature())) {
+        case Types.T_BYTE:
+        case Types.T_CHAR:
+        case Types.T_SHORT:
+        case Types.T_INT:
+        case Types.T_LONG:
+          //solution returns a long, which is fine for every integer type
+          IntegerExpression integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
+          test.args.put(var, integer.solution());
+          break;
+
+        case Types.T_FLOAT:
+        case Types.T_DOUBLE:
+          RealExpression real = frame.getLocalAttr(var.getSlotIndex(), RealExpression.class);
+          test.args.put(var, real.solution());
+          break;
+
+        case Types.T_BOOLEAN:
+          integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
+          boolean boolVal = integer.solution() == 1;
+          test.args.put(var, boolVal);
+          break;
+
+        case Types.T_VOID:
+        case Types.T_NONE:
+          //TODO this is an error condition
+          break;
+
+        case Types.T_ARRAY:
+        case Types.T_REFERENCE:
+          //TODO handle references
+          break;
+
+        default:
+        //Do nothing
       }
     }
 
+    return test;
+  }
+
+  private void addTestCase(TestCase test) {
+    if (!models.containsKey(test.method)) {
+      models.put(test.method, new ArrayList<TestCase>());
+    }
+
+    models.get(test.method).add(test);
   }
 
   @Override
