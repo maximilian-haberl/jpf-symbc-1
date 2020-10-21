@@ -31,8 +31,10 @@ import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -41,7 +43,7 @@ import java.util.logging.Level;
  */
 public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
-  private Map<MethodInfo, List<TestCase>> models;
+  private Map<MethodInfo, Set<TestCase>> models;
   private final JPFLogger logger = JPF.getLogger("gov.nasa.jpf.symbc.testgeneration.SymbolicTestGeneratorListener");
   private String formatterClassName;
   private Config config;
@@ -139,16 +141,13 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     TestCase test = setArguments(summary, frame);
 
     //TODO: remove
-    /*
-    System.out.println(mi.getReturnTypeName());
+    //System.out.println(mi.getReturnTypeName());
     if (!mi.getReturnTypeName().equalsIgnoreCase("void")) {
       Expression returnExpression = ret.getReturnAttr(currentThread, Expression.class);
       if (returnExpression != null) {
         System.out.println("Return expression: " + returnExpression);
       }
     }
-    */
-
     switch (mi.getReturnTypeCode()) {
       //a lot of fallthrough because all integers are handled the same
       case Types.T_BYTE:
@@ -247,7 +246,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       if (handler != null) {
         caught = true;
-        System.out.println(String.format("Caught %s in %s", exceptionInfo.getName(), mi.getLongName()));
+        //System.out.println(String.format("Caught %s in %s", exceptionInfo.getName(), mi.getLongName()));
       } else if (frame.hasFrameAttr(ArgumentSummary.class)) {
         symbolicFrames.add(frame);
       }
@@ -343,7 +342,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   private void addTestCase(TestCase test) {
     if (!models.containsKey(test.method)) {
-      models.put(test.method, new ArrayList<TestCase>());
+      models.put(test.method, new LinkedHashSet<>());
     }
 
     models.get(test.method).add(test);
@@ -378,22 +377,23 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   @Override
   public void publishFinished(Publisher publisher) {
-    TestcaseFormatter formatter = (TestcaseFormatter) instanceFromClassname(formatterClassName);
+    Object o = instanceFromClassname(formatterClassName);
 
-    if (formatter == null) {
+    if (o == null || !(o instanceof TestcaseFormatter)) {
       if (logger.isLoggable(Level.SEVERE)) {
         logger.severe("Could not output any test cases as no formatter could be created.");
       }
       return;
     }
 
+    TestcaseFormatter formatter = (TestcaseFormatter) o;
     publisher.publishTopicStart("Test cases");
 
     //print out everything
     PrintWriter pw = publisher.getOut();
-    for (Map.Entry<MethodInfo, List<TestCase>> entry : models.entrySet()) {
+    for (Map.Entry<MethodInfo, Set<TestCase>> entry : models.entrySet()) {
       MethodInfo mi = entry.getKey();
-      List<TestCase> testCases = entry.getValue();
+      Set<TestCase> testCases = entry.getValue();
 
       if (!mi.isStatic() && !hasTrivialConstructor(mi.getClassInfo())) {
         logger.log(Level.WARNING, String.format("Cannot generate test cases for %s as the declaring class %s does not have a trivial constructor", mi.getName(), mi.getClassName()));
