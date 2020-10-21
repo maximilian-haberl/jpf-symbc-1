@@ -27,16 +27,13 @@ import gov.nasa.jpf.vm.MethodInfo;
 import gov.nasa.jpf.vm.StackFrame;
 import gov.nasa.jpf.vm.Types;
 import gov.nasa.jpf.vm.VM;
-import java.io.CharArrayWriter;
-import java.io.IOException;
 import java.io.PrintWriter;
-import java.io.Writer;
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  *
@@ -46,15 +43,18 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   private Map<MethodInfo, List<TestCase>> models;
   private final JPFLogger logger = JPF.getLogger("gov.nasa.jpf.symbc.testgeneration.SymbolicTestGeneratorListener");
+  private String formatterClassName;
+  private Config config;
   private boolean optimize;
-  private boolean fullArgs;
 
   public SymbolicTestGeneratorListener(Config conf, JPF jpf) {
+    config = conf;
     //fetching an optional abbreviation
     String abbreviation = conf.getString("SymbolicTestGeneratorListener.abbreviation", "SymbolicTestGeneratorListener");
+    formatterClassName = conf.getString(abbreviation + ".formatter", "gov.nasa.jpf.symbc.testgeneration.JUnit5Formatter");
 
     optimize = conf.getBoolean(abbreviation + ".optimize", false);
-    fullArgs = conf.getBoolean(abbreviation + ".fullArgs", false);
+    //TODO formatter
 
     jpf.addPublisherExtension(ConsolePublisher.class, this);
     models = new HashMap<>();
@@ -139,6 +139,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     TestCase test = setArguments(summary, frame);
 
     //TODO: remove
+    /*
     System.out.println(mi.getReturnTypeName());
     if (!mi.getReturnTypeName().equalsIgnoreCase("void")) {
       Expression returnExpression = ret.getReturnAttr(currentThread, Expression.class);
@@ -146,6 +147,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         System.out.println("Return expression: " + returnExpression);
       }
     }
+    */
 
     switch (mi.getReturnTypeCode()) {
       //a lot of fallthrough because all integers are handled the same
@@ -376,7 +378,14 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   @Override
   public void publishFinished(Publisher publisher) {
-    TestcaseFormatter formatter = new JUnit5Formatter();
+    TestcaseFormatter formatter = (TestcaseFormatter) instanceFromClassname(formatterClassName);
+
+    if (formatter == null) {
+      if (logger.isLoggable(Level.SEVERE)) {
+        logger.severe("Could not output any test cases as no formatter could be created.");
+      }
+      return;
+    }
 
     publisher.publishTopicStart("Test cases");
 
@@ -409,6 +418,17 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     }
 
     return false;
+  }
+
+  private Object instanceFromClassname(String name) {
+    try {
+      Class c = Class.forName(formatterClassName);
+      Class[] args = {Config.class};
+      return c.getConstructor(args).newInstance(config);
+    } catch (ClassNotFoundException | NoSuchMethodException | SecurityException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
+      logger.severe("Could not instantiate an instance of class " + name);
+    }
+    return null;
   }
 
   private class ArgumentSummary {

@@ -5,28 +5,32 @@
  */
 package gov.nasa.jpf.symbc.testgeneration;
 
+import gov.nasa.jpf.Config;
 import java.io.Writer;
 
 /**
  *
  * @author mxl
  */
-public interface TestcaseFormatter {
+public abstract class TestcaseFormatter {
 
-    /**
-     * Creates a String representation of the given test case and prints it to
-     * the PrintWriter pw
-     *
-     * @param testCase test case that should be formatted
-     * @param pw PrintWriter the test case should be written to
-     */
-    public void format(TestCase test, Writer writer);
+  /**
+   * Creates a String representation of the given test case and prints it to the
+   * PrintWriter pw
+   *
+   * @param test test case that should be formatted
+   * @param writer PrintWriter the test case should be written to
+   */
+  public abstract void format(TestCase test, Writer writer);
 
-    /**
-     * Creates and returns a String representation of the given test case
-     *
-     * @param test test case that should be formatted
-     * @return String representation of the test case
-     */
-    public String format(TestCase test);
+  /**
+   * Creates and returns a String representation of the given test case
+   *
+   * @param test test case that should be formatted
+   * @return String representation of the test case
+   */
+  public abstract String format(TestCase test);
+
+  public TestcaseFormatter(Config config) {
   }
+}

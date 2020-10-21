@@ -26,12 +26,12 @@ public class IndentableWriter extends Writer {
   /**
    * Stores i indentations in the i-th element
    */
-  private List<String> indentations;
+  private final List<String> indentations;
 
   /**
    * the wrapped writer
    */
-  private Writer writer;
+  private final Writer writer;
 
   public IndentableWriter(Writer out) {
     super();
@@ -53,7 +53,7 @@ public class IndentableWriter extends Writer {
     return indentations.get(indents);
   }
 
-  private final void initIndents(int amount) {
+  private void initIndents(int amount) {
     String indent = "";
 
     for (int i = 0; i < amount; i++) {

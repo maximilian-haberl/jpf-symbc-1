@@ -5,6 +5,7 @@
  */
 package gov.nasa.jpf.symbc.testgeneration;
 
+import gov.nasa.jpf.Config;
 import gov.nasa.jpf.vm.ElementInfo;
 import gov.nasa.jpf.vm.LocalVarInfo;
 import gov.nasa.jpf.vm.Types;
@@ -15,23 +16,29 @@ import java.io.Writer;
  *
  * @author mxl
  */
-public class JUnit5Formatter implements TestcaseFormatter {
+public class JUnit5Formatter extends TestcaseFormatter {
 
   private final String NL = System.lineSeparator();
   private int testCaseCount = 0;
-  private boolean fullArgs;
+  private boolean fullArgs, assertMessage;
+  private int indents;
+
+  public JUnit5Formatter(Config config) {
+    super(config);
+
+    fullArgs = config.getBoolean("formatter.fullArgs", false);
+    assertMessage = config.getBoolean("formatter.message", false);
+  }
 
   @Override
-  public void format(TestCase test, Writer pw) {
-    IndentableWriter writer = new IndentableWriter(pw);
-    formatInstance(writer, test);
+  public void format(TestCase test, Writer writer) {
+    formatInstance(new IndentableWriter(writer), test);
   }
 
   @Override
   public String format(TestCase test) {
     CharArrayWriter cw = new CharArrayWriter();
-    IndentableWriter writer = new IndentableWriter(cw);
-    formatInstance(writer, test);
+    formatInstance(new IndentableWriter(cw), test);
     return cw.toString();
   }
 
@@ -70,7 +77,14 @@ public class JUnit5Formatter implements TestcaseFormatter {
     return writer;
   }
 
-  private IndentableWriter formatComment(IndentableWriter writer, TestCase test) {
+  protected IndentableWriter formatDeclaration(IndentableWriter writer, TestCase test) {
+    writer.indent(indents).append("//Testing method ").append(test.method.getName()).append(NL);
+    writer.indent(indents).append("@Test").append(NL);
+    writer.indent(indents).append("public void test").append(testCaseCount++).append("(){").append(NL);
+    return writer;
+  }
+
+  protected IndentableWriter formatAssertMessage(IndentableWriter writer, TestCase test) {
     writer.append("\"");
     writer.append("Ein Test für die Methode ").append(test.method.getName()).append(" ist fehlgeschlagen.");
 
@@ -98,64 +112,92 @@ public class JUnit5Formatter implements TestcaseFormatter {
     return writer.append("\"");
   }
 
-  private void formatInstance(IndentableWriter writer, TestCase test) {
+  /**
+   * Formats the test case body for a non void method, which did not throw an
+   * exception.
+   *
+   * @param writer
+   * @param test
+   */
+  protected void formatDefaultBody(IndentableWriter writer, TestCase test) {
+    writer.indent(indents).append(test.method.getReturnTypeName()).append(" expected = ").append(test.returnValue).append(";").append(NL);
+
+    writer.indent(indents).append(test.method.getReturnTypeName()).append(" result = ");
+    formatCall(writer, test).append(";").append(NL);
+
+    writer.indent(indents).append("assertEquals(expected, result");
+    if (assertMessage) {
+      writer.append(", ");
+      formatAssertMessage(writer, test).append(");").append(NL);
+    } else {
+      writer.append(");").append(NL);
+    }
+  }
+
+  protected void formatThrows(IndentableWriter writer, TestCase test) {
+    //method threw an exception
+    ElementInfo exception = (ElementInfo) test.returnValue;
+
+    //formatting the assertThrows
+    writer.indent(indents).append("assertThrows(").append(NL);
+    writer.indent(indents + 2).append(exception.getClassInfo().getName()).append(".class,").append(NL);
+    writer.indent(indents + 2).append("() -> {");
+    formatCall(writer, test).append("}");
+
+    if (assertMessage) {
+      writer.append(",").append(NL).indent(indents + 2);
+      formatAssertMessage(writer, test);
+    }
+    writer.append(NL).indent(indents).append(");").append(NL);
+  }
+
+  /**
+   * Formats a void method that did not throw an exception in the oracle.
+   *
+   * @param writer
+   * @param test
+   */
+  protected void formatVoid(IndentableWriter writer, TestCase test) {
+    //no assertion , because no return value -> test can only fail if method throws exception
+    writer.indent(indents);
+    formatCall(writer, test).append(";").append(NL);
+  }
+
+  protected void formatInstance(IndentableWriter writer, TestCase test) {
     StringBuilder builder = new StringBuilder();
     String className = test.method.getClassName();
     boolean dynamic = !test.method.isStatic();
-    int indent = 1;
+    indents = 1;
 
-    writer.indent(indent).append("//Testing method ").append(test.method.getName()).append(NL);
-    writer.indent(indent).append("@Test").append(NL);
+    formatDeclaration(writer, test);
 
-    writer.indent(indent).append("public void test").append(testCaseCount++).append("(){").append(NL);
+    //one additional indent for the method body
+    indents++;
 
-    //we are writing the method body now
-    indent++;
-
+    //creating an instance for dynamic methods
     if (dynamic) {
-      writer.indent(indent).append(className).append(" instance = new ").append(className).append("();").append(NL);
+      writer.indent(indents).append(className).append(" instance = new ").append(className).append("();").append(NL);
     }
 
     if (test.didThrow) {
-      //method threw an exception
-      ElementInfo exception = (ElementInfo) test.returnValue;
-
-      //formatting the assertThrows
-      writer.indent(indent).append("assertThrows(").append(NL);
-      writer.indent(indent + 2).append(exception.getClassInfo().getName()).append(".class,").append(NL);
-      writer.indent(indent + 2).append("() -> {");
-      if (dynamic) {
-        builder.append("instance.");
-      }
-      formatCall(writer, test).append("},").append(NL);
-      writer.indent(indent + 2);
-      formatComment(writer, test).append(NL);
-      writer.indent(indent).append(");").append(NL);
+      formatThrows(writer, test);
     } else if (test.method.getReturnTypeCode() != Types.T_VOID) {
-      //non void method that did not throw an exception
-      writer.indent(indent).append(test.method.getReturnTypeName()).append(" expected = ").append(test.returnValue).append(";").append(NL);
-
-      writer.indent(indent).append(test.method.getReturnTypeName()).append(" result = ");
-      if (dynamic) {
-        builder.append("instance.");
-      }
-      formatCall(writer, test).append(";").append(NL);
-
-      writer.indent(indent).append("assertEquals(expected, result, ");
-      formatComment(writer, test).append(");").append(NL);
-
+      formatDefaultBody(writer, test);
     } else {
-      //void method that did not throw an exception
-      writer.indent(indent);
-      if (dynamic) {
-        builder.append("instance.");
-      }
-      formatCall(writer, test).append(";").append(NL);
+      formatVoid(writer, test);
     }
 
     //end of method body
-    indent--;
-    writer.indent(indent).append("}").append(NL).append(NL);
+    indents--;
+    writer.indent(indents).append("}").append(NL).append(NL);
+  }
+
+  /**
+   * resets the test case counter to 0. The next test case formatted by this
+   * formatter will be called test0.
+   */
+  public void resetTestCounter() {
+    testCaseCount = 0;
   }
 
 }
