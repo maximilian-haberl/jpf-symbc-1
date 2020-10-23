@@ -28,6 +28,7 @@ import gov.nasa.jpf.vm.StackFrame;
 import gov.nasa.jpf.vm.Types;
 import gov.nasa.jpf.vm.VM;
 import java.io.PrintWriter;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -358,45 +359,16 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     models.get(test.method).add(test);
   }
 
-  private Object getDefault(byte type) {
-    switch (type) {
-      case Types.T_BYTE:
-      case Types.T_CHAR:
-      case Types.T_SHORT:
-      case Types.T_INT:
-      case Types.T_LONG:
-        return 0;
-
-      case Types.T_FLOAT:
-      case Types.T_DOUBLE:
-        return 0.0;
-
-      case Types.T_BOOLEAN:
-        return false;
-
-      case Types.T_REFERENCE:
-      case Types.T_ARRAY:
-        //returning actual null would be bad, because we want the string representation
-        return null;
-
-      default:
-        //this catches T_VOID, T_NONE or any other byte; All of them are error conditions
-        throw new IllegalArgumentException();
-    }
-  }
-
   @Override
   public void publishFinished(Publisher publisher) {
-    Object o = instanceFromClassname(formatterClassName);
+    TestcaseFormatter formatter = instanceFromClassname(formatterClassName, TestcaseFormatter.class, new Object[]{config});
 
-    if (o == null || !(o instanceof TestcaseFormatter)) {
+    if (formatter == null) {
       if (logger.isLoggable(Level.SEVERE)) {
         logger.severe("Could not output any test cases as no formatter could be created.");
       }
       return;
     }
-
-    TestcaseFormatter formatter = (TestcaseFormatter) o;
     publisher.publishTopicStart("Test cases");
 
     //print out everything
@@ -430,11 +402,20 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     return false;
   }
 
-  private Object instanceFromClassname(String name) {
+  private <T> T instanceFromClassname(String name, Class<T> superClass, Object[] args) {
     try {
-      Class c = Class.forName(formatterClassName);
-      Class[] args = {Config.class};
-      return c.getConstructor(args).newInstance(config);
+      Class queried = Class.forName(name);
+
+      if (!superClass.isAssignableFrom(queried)) {
+        return null;
+      }
+
+      Class[] argClasses = new Class[args.length];
+      for (int i = 0; i < args.length; i++) {
+        argClasses[i] = args[i].getClass();
+      }
+
+      return (T) queried.getConstructor(argClasses).newInstance(args);
     } catch (ClassNotFoundException | NoSuchMethodException | SecurityException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
       logger.severe("Could not instantiate an instance of class " + name);
     }
