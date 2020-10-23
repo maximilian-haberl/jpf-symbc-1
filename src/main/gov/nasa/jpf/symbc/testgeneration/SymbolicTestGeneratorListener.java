@@ -98,7 +98,8 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
           summary.symbolicArgs.add(var);
         } else {
           //concrete
-          summary.concreteArgs.put(var, args[i]);
+          //this reference is not passed in the args array
+          summary.concreteArgs.put(var, args[i - startIdx]);
         }
       }
 
@@ -156,7 +157,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       case Types.T_INT:
       case Types.T_LONG:
         IntegerExpression integer = (IntegerExpression) ret.getReturnAttr(currentThread, IntegerExpression.class);
-        if (integer == null) {
+        if (integer == null || integer.solution() == SymbolicInteger.UNDEFINED) {
           //concrete
           test.returnValue = ret.getReturnValue(currentThread);
         } else {
@@ -168,7 +169,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       case Types.T_DOUBLE:
       case Types.T_FLOAT:
         RealExpression real = (RealExpression) ret.getReturnAttr(currentThread, RealExpression.class);
-        if (real == null) {
+        if (real == null || real.solution() == SymbolicReal.UNDEFINED) {
           //concrete
           test.returnValue = ret.getReturnValue(currentThread);
         } else {
@@ -179,7 +180,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       case Types.T_BOOLEAN:
         integer = (IntegerExpression) ret.getReturnAttr(currentThread, IntegerExpression.class);
-        if (integer == null) {
+        if (integer == null || integer.solution() == SymbolicInteger.UNDEFINED) {
           //concrete
           Object o = ret.getReturnValue(currentThread);
           assert o instanceof Integer;
@@ -287,6 +288,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     //TODO put in its own method
     for (LocalVarInfo var : summary.symbolicArgs) {
+
       //converting the solution into the correct type
       byte type = Types.getTypeCode(var.getSignature());
       switch (type) {
@@ -299,7 +301,9 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
           IntegerExpression integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
           long integerSolution = integer.solution();
           if (integerSolution == SymbolicInteger.UNDEFINED) {
-            test.args.put(var, getDefault(type));
+            //we use a default value
+            test.args.put(var, 1);
+            frame.getLocalAttr(var.getSlotIndex(), SymbolicInteger.class).solution = 1;
           } else {
             test.args.put(var, integerSolution);
           }
@@ -310,7 +314,8 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
           RealExpression real = frame.getLocalAttr(var.getSlotIndex(), RealExpression.class);
           double realSolution = real.solution();
           if (realSolution == SymbolicReal.UNDEFINED) {
-            test.args.put(var, getDefault(type));
+            test.args.put(var, 1.0);
+            frame.getLocalAttr(var.getSlotIndex(), SymbolicReal.class).solution = 1.0;
           } else {
             test.args.put(var, real.solution());
           }
@@ -318,8 +323,13 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
         case Types.T_BOOLEAN:
           integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
-          boolean boolVal = integer.solution() == 1;
-          test.args.put(var, boolVal);
+          if (integer.solution() == SymbolicInteger.UNDEFINED) {
+            test.args.put(var, false);
+            frame.getLocalAttr(var.getSlotIndex(), SymbolicInteger.class).solution = 0;
+          } else {
+            boolean boolVal = integer.solution() == 1;
+            test.args.put(var, boolVal);
+          }
           break;
 
         case Types.T_VOID:
@@ -333,7 +343,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
           break;
 
         default:
-        //Do nothing
+        //TODO: error condition
       }
     }
 
@@ -434,12 +444,12 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
   private class ArgumentSummary {
 
     /**
-     * mapping argument name to symbolic name
+     * Mapping symbolic arguments to their concrete values
      */
     public List<LocalVarInfo> symbolicArgs;
 
     /**
-     * mapping argument name to value
+     * Mapping concrete arguments to their values
      */
     public Map<LocalVarInfo, Object> concreteArgs;
 
