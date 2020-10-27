@@ -6,11 +6,15 @@
 package gov.nasa.jpf.symbc.testgeneration;
 
 import gov.nasa.jpf.Config;
+import gov.nasa.jpf.JPF;
+import gov.nasa.jpf.util.JPFLogger;
 import gov.nasa.jpf.vm.ElementInfo;
 import gov.nasa.jpf.vm.LocalVarInfo;
 import gov.nasa.jpf.vm.Types;
 import java.io.CharArrayWriter;
 import java.io.Writer;
+import java.util.Map;
+import java.util.logging.Level;
 
 /**
  *
@@ -22,6 +26,7 @@ public class JUnit5Formatter extends TestcaseFormatter {
   private int testCaseCount = 0;
   private boolean fullArgs, assertMessage;
   private int indents;
+  private JPFLogger logger = JPF.getLogger("gov.nasa.jpf.symbc.testgeneration.JUnit5Formatter");
 
   public JUnit5Formatter(Config config) {
     super(config);
@@ -67,9 +72,16 @@ public class JUnit5Formatter extends TestcaseFormatter {
     for (int i = start; i < arguments.length; i++) {
       LocalVarInfo var = arguments[i];
       if (i > start) {
-        writer.append(",");
+        writer.append(", ");
       }
-      writer.append(test.args.get(var));
+
+      if (Types.isReference(var.getSignature())) {
+        //for reference types we assume they have been created beforehand with the same name as the argument
+        writer.append(var.getName());
+      } else {
+        //for basic types we put the value directly into the call
+        writer.append(test.args.get(var));
+      }
     }
 
     writer.append(")");
@@ -110,6 +122,50 @@ public class JUnit5Formatter extends TestcaseFormatter {
     }
 
     return writer.append("\"");
+  }
+
+  protected void formatArray(IndentableWriter writer, Object o) {
+    if (!o.getClass().isArray()) {
+      throw new IllegalArgumentException("Cannot format " + o.getClass().getCanonicalName() + " as an array");
+    }
+
+    Object[] array = (Object[]) o;
+
+    writer.append("{");
+    for (int i = 0; i < array.length; i++) {
+      if (i > 0) {
+        writer.append(", ");
+      }
+      writer.append(array[i]);
+    }
+
+    writer.append("}");
+  }
+
+  protected void formatReference(IndentableWriter writer, Object o) {
+    writer.append("null");
+    if (logger.isLoggable(Level.WARNING)) {
+      logger.log(Level.WARNING, "Reference types other than arrays are not supported!");
+    }
+  }
+
+  protected void formatReferenceTypes(IndentableWriter writer, TestCase test) {
+    for (Map.Entry<LocalVarInfo, Object> entry : test.args.entrySet()) {
+      LocalVarInfo var = entry.getKey();
+      Object val = entry.getValue();
+
+      if (Types.isReference(var.getSignature())) {
+        writer.indent(indents).append(var.getType()).append(" ").append(var.getName()).append(" = ");
+
+        if (Types.isArray(var.getSignature())) {
+          formatArray(writer, val);
+        } else {
+          formatReference(writer, val);
+        }
+
+        writer.append(";").append(NL);
+      }
+    }
   }
 
   /**
