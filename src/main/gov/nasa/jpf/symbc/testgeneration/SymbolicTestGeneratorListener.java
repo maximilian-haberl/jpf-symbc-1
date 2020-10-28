@@ -1,6 +1,5 @@
 package gov.nasa.jpf.symbc.testgeneration;
 
-import aima.core.environment.eightpuzzle.EightPuzzleBoard;
 import gov.nasa.jpf.Config;
 import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.ListenerAdapter;
@@ -34,6 +33,7 @@ import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -96,17 +96,28 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       assert lvi != null : "ERROR: No debug information available";
 
+      if (hasObjects(mi)) {
+        if (logger.isLoggable(Level.WARNING)) {
+          logger.log(Level.WARNING, "No tests are generated for " + mi.getName() + ", as it has a non array reference type");
+        }
+        return;
+      }
+
       //iterating over all arguments except 'this'
       int startIdx = 0;
       if (!mi.isStatic()) {
         startIdx = 1;
       }
+
       for (int i = startIdx; i < lvi.length; i++) {
         LocalVarInfo var = lvi[i];
+        int argIndex = i - startIdx;
 
-        if (symVars.get(i - startIdx).equalsIgnoreCase("sym")) {
+        if (symVars.get(argIndex).equalsIgnoreCase("sym")) {
           //symbolic
           summary.symbolicArgs.add(var);
+          
+          //collect all the symbolic varaiables
         } else {
           //concrete
           //this reference is not passed in the args array
@@ -402,6 +413,36 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     models.get(test.method).add(test);
   }
 
+  /**
+   * Returns true, iff one of the arguments or the return type is a reference
+   * type excluding arrays of basic types.
+   *
+   * @param mi method to check
+   * @return
+   */
+  private boolean hasObjects(MethodInfo mi) {
+    for (LocalVarInfo var : mi.getArgumentLocalVars()) {
+      byte typecode = Types.getTypeCode(var.getType());
+      if (typecode == Types.T_REFERENCE) {
+        return true;
+      } else if (typecode == Types.T_ARRAY) {
+        //check if element type is basic
+        if (!Types.isBasicType(Types.getArrayElementType(var.getType()))) {
+          return true;
+        }
+      }
+    }
+
+    byte returnTypecode = Types.getTypeCode(mi.getReturnType());
+    if (returnTypecode == Types.T_REFERENCE) {
+      return true;
+    } else if (returnTypecode == Types.T_ARRAY) {
+      return !Types.isBasicType(Types.getArrayElementType(mi.getReturnType()));
+    }
+
+    return false;
+  }
+
   private Object partialSymbolicArray(ElementInfo ei) {
     ArrayFields fields = ei.getArrayFields();
     if (fields.isReferenceArray()) {
@@ -418,21 +459,26 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       case "short":
       case "int":
       case "long":
-        Long[] longArray = new Long[fields.arrayLength()];
-        for (int i = 0; i < longArray.length; i++) {
-          SymbolicInteger exp = fields.getFieldAttr(i, SymbolicInteger.class);
-          if (exp.solution() == SymbolicInteger.UNDEFINED) {
-            exp.solution = 1;
+        Long[] longArray = new Long[ei.arrayLength()];
+        for (int i = 0; i < ei.arrayLength(); i++) {
+          SymbolicInteger exp = ei.getElementAttr(i, SymbolicInteger.class);
+          if (exp == null) {
+            System.out.println("Index " + i + " has no Symbolic integer attached");
+          } else {
+
+            if (exp.solution() == SymbolicInteger.UNDEFINED) {
+              exp.solution = 1;
+            }
+            longArray[i] = exp.solution();
           }
-          longArray[i] = exp.solution();
         }
         return longArray;
 
       case "float":
       case "double":
-        Double[] doubleArray = new Double[fields.arrayLength()];
-        for (int i = 0; i < doubleArray.length; i++) {
-          SymbolicReal real = fields.getFieldAttr(i, SymbolicReal.class);
+        Double[] doubleArray = new Double[ei.arrayLength()];
+        for (int i = 0; i < ei.arrayLength(); i++) {
+          SymbolicReal real = ei.getElementAttr(i, SymbolicReal.class);
           if (real.solution() == SymbolicReal.UNDEFINED) {
             real.solution = 1.0;
           }
@@ -441,9 +487,9 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         return doubleArray;
 
       case "boolean":
-        Boolean[] booleanArray = new Boolean[fields.arrayLength()];
-        for (int i = 0; i < booleanArray.length; i++) {
-          SymbolicInteger symBool = fields.getFieldAttr(i, SymbolicInteger.class);
+        Boolean[] booleanArray = new Boolean[ei.arrayLength()];
+        for (int i = 0; i < ei.arrayLength(); i++) {
+          SymbolicInteger symBool = ei.getElementAttr(i, SymbolicInteger.class);
           booleanArray[i] = symBool.solution == 1;
         }
         return booleanArray;
@@ -638,9 +684,16 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
      */
     public MethodInfo info;
 
+    public Set<SymbolicInteger> symInts;
+    public Set<SymbolicReal> symReals;
+    public Set<ArrayExpression> symArrays;
+
     public ArgumentSummary(MethodInfo info) {
       symbolicArgs = new ArrayList<>();
       concreteArgs = new HashMap<>();
+      symInts = new HashSet<>();
+      symReals = new HashSet<>();
+      symArrays = new HashSet<>();
       this.info = info;
     }
 

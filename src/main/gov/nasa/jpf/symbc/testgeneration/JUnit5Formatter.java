@@ -37,13 +37,13 @@ public class JUnit5Formatter extends TestcaseFormatter {
 
   @Override
   public void format(TestCase test, Writer writer) {
-    formatInstance(new IndentableWriter(writer), test);
+    formatTestCase(new IndentableWriter(writer), test);
   }
 
   @Override
   public String format(TestCase test) {
     CharArrayWriter cw = new CharArrayWriter();
-    formatInstance(new IndentableWriter(cw), test);
+    formatTestCase(new IndentableWriter(cw), test);
     return cw.toString();
   }
 
@@ -176,7 +176,13 @@ public class JUnit5Formatter extends TestcaseFormatter {
    * @param test
    */
   protected void formatDefaultBody(IndentableWriter writer, TestCase test) {
-    writer.indent(indents).append(test.method.getReturnTypeName()).append(" expected = ").append(test.returnValue).append(";").append(NL);
+    writer.indent(indents).append(test.method.getReturnTypeName()).append(" expected = ");
+    if (Types.isArray(test.method.getReturnType())) {
+      formatArray(writer, test.returnValue);
+    } else if (Types.isBasicType(test.method.getReturnType())) {
+      writer.append(test.returnValue);
+    }
+    writer.append(";").append(NL);
 
     writer.indent(indents).append(test.method.getReturnTypeName()).append(" result = ");
     formatCall(writer, test).append(";").append(NL);
@@ -219,7 +225,7 @@ public class JUnit5Formatter extends TestcaseFormatter {
     formatCall(writer, test).append(";").append(NL);
   }
 
-  protected void formatInstance(IndentableWriter writer, TestCase test) {
+  protected void formatTestCase(IndentableWriter writer, TestCase test) {
     StringBuilder builder = new StringBuilder();
     String className = test.method.getClassName();
     boolean dynamic = !test.method.isStatic();
@@ -229,6 +235,8 @@ public class JUnit5Formatter extends TestcaseFormatter {
 
     //one additional indent for the method body
     indents++;
+
+    formatReferenceTypes(writer, test);
 
     //creating an instance for dynamic methods
     if (dynamic) {
