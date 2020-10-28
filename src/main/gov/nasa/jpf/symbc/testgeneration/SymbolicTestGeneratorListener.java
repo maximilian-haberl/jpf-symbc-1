@@ -1,5 +1,6 @@
 package gov.nasa.jpf.symbc.testgeneration;
 
+import aima.core.environment.eightpuzzle.EightPuzzleBoard;
 import gov.nasa.jpf.Config;
 import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.ListenerAdapter;
@@ -7,6 +8,7 @@ import gov.nasa.jpf.jvm.bytecode.JVMInvokeInstruction;
 import gov.nasa.jpf.jvm.bytecode.JVMReturnInstruction;
 import gov.nasa.jpf.report.ConsolePublisher;
 import gov.nasa.jpf.report.Publisher;
+import gov.nasa.jpf.symbc.arrays.ArrayExpression;
 import gov.nasa.jpf.symbc.bytecode.BytecodeUtils;
 import gov.nasa.jpf.symbc.numeric.Expression;
 import gov.nasa.jpf.symbc.numeric.IntegerExpression;
@@ -16,6 +18,7 @@ import gov.nasa.jpf.symbc.numeric.RealExpression;
 import gov.nasa.jpf.symbc.numeric.SymbolicInteger;
 import gov.nasa.jpf.symbc.numeric.SymbolicReal;
 import gov.nasa.jpf.util.JPFLogger;
+import gov.nasa.jpf.vm.ArrayFields;
 import gov.nasa.jpf.vm.ChoiceGenerator;
 import gov.nasa.jpf.vm.ClassInfo;
 import gov.nasa.jpf.vm.ElementInfo;
@@ -28,7 +31,6 @@ import gov.nasa.jpf.vm.StackFrame;
 import gov.nasa.jpf.vm.Types;
 import gov.nasa.jpf.vm.VM;
 import java.io.PrintWriter;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -36,6 +38,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Vector;
 import java.util.logging.Level;
 
 /**
@@ -57,7 +60,6 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     formatterClassName = conf.getString(abbreviation + ".formatter", "gov.nasa.jpf.symbc.testgeneration.JUnit5Formatter");
 
     optimize = conf.getBoolean(abbreviation + ".optimize", false);
-    //TODO formatter
 
     jpf.addPublisherExtension(ConsolePublisher.class, this);
     models = new HashMap<>();
@@ -76,10 +78,19 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   private void methodEntered(VM vm, ThreadInfo currentThread, JVMInvokeInstruction invoke) {
     MethodInfo mi = invoke.getInvokedMethod();
+    StackFrame frame = currentThread.getModifiableTopFrame();
 
-    if (BytecodeUtils.isMethodSymbolic(vm.getConfig(), mi.getFullName(), mi.getNumberOfArguments(), null)) {
+    /*
+    we need to check if the stack frame for this method has already been created.
+    In case we use fully symbolic arrays the invoke instruction will be executed twice.
+    The first time the correct stack frame has not been created. We dont want to attach
+    a summary in this case
+     */
+    boolean correctFrame = frame.getMethodInfo().getGlobalId() == mi.getGlobalId();
+    Vector<String> symVars = new Vector<>();
+
+    if (correctFrame && BytecodeUtils.isMethodSymbolic(vm.getConfig(), mi.getFullName(), mi.getNumberOfArguments(), symVars)) {
       LocalVarInfo[] lvi = mi.getArgumentLocalVars();
-      StackFrame frame = currentThread.getModifiableTopFrame();
       ArgumentSummary summary = new ArgumentSummary(mi);
       Object[] args = invoke.getArgumentValues(currentThread);
 
@@ -92,15 +103,15 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       }
       for (int i = startIdx; i < lvi.length; i++) {
         LocalVarInfo var = lvi[i];
-        Expression expression = (Expression) frame.getLocalAttr(var.getSlotIndex(), Expression.class);
 
-        if (expression != null) {
+        if (symVars.get(i - startIdx).equalsIgnoreCase("sym")) {
           //symbolic
           summary.symbolicArgs.add(var);
         } else {
           //concrete
           //this reference is not passed in the args array
-          summary.concreteArgs.put(var, args[i - startIdx]);
+          Object val = concreteVar(var, args[i - startIdx]);
+          summary.concreteArgs.put(var, val);
         }
       }
 
@@ -140,14 +151,17 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       logger.finer(pc);
     }
 
-    TestCase test = setArguments(summary, frame);
+    System.out.println("Path condition:");
+    System.out.println(pc);
+
+    TestCase test = setArguments(summary, frame, currentThread);
 
     //TODO: remove
     //System.out.println(mi.getReturnTypeName());
     if (!mi.getReturnTypeName().equalsIgnoreCase("void")) {
       Expression returnExpression = ret.getReturnAttr(currentThread, Expression.class);
       if (returnExpression != null) {
-        System.out.println("Return expression: " + returnExpression);
+        System.out.println("Return expression: " + returnExpression.toString());
       }
     }
     switch (mi.getReturnTypeCode()) {
@@ -158,7 +172,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       case Types.T_INT:
       case Types.T_LONG:
         IntegerExpression integer = (IntegerExpression) ret.getReturnAttr(currentThread, IntegerExpression.class);
-        if (integer == null || integer.solution() == SymbolicInteger.UNDEFINED) {
+        if (integer == null) {
           //concrete
           test.returnValue = ret.getReturnValue(currentThread);
         } else {
@@ -170,7 +184,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       case Types.T_DOUBLE:
       case Types.T_FLOAT:
         RealExpression real = (RealExpression) ret.getReturnAttr(currentThread, RealExpression.class);
-        if (real == null || real.solution() == SymbolicReal.UNDEFINED) {
+        if (real == null) {
           //concrete
           test.returnValue = ret.getReturnValue(currentThread);
         } else {
@@ -181,7 +195,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       case Types.T_BOOLEAN:
         integer = (IntegerExpression) ret.getReturnAttr(currentThread, IntegerExpression.class);
-        if (integer == null || integer.solution() == SymbolicInteger.UNDEFINED) {
+        if (integer == null) {
           //concrete
           Object o = ret.getReturnValue(currentThread);
           assert o instanceof Integer;
@@ -197,6 +211,21 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         break;
 
       case Types.T_ARRAY:
+        ArrayExpression array = ret.getReturnAttr(currentThread, ArrayExpression.class);
+        ElementInfo ei = (ElementInfo) ret.getReturnValue(currentThread);
+
+        if (array != null) {
+          //array fully symbolic
+          test.returnValue = "symbolic array";
+        } else if (ei.hasElementAttr(Expression.class)) {
+          //partial symbollic
+          test.returnValue = partialSymbolicArray(ei);
+        } else {
+          //concrete array
+          test.returnValue = concreteArray(ei);
+        }
+        break;
+
       case Types.T_REFERENCE:
       //dont know what to do yet so fallthrough
       default:
@@ -271,10 +300,11 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     if (pc.solve()) {
       for (StackFrame symbolicFrame : symbolicFrames) {
         ArgumentSummary summary = symbolicFrame.getFrameAttr(ArgumentSummary.class);
-        TestCase test = setArguments(summary, symbolicFrame);
+        TestCase test = setArguments(summary, symbolicFrame, currentThread);
         test.didThrow = true;
         test.returnValue = thrownException;
         addTestCase(test);
+        System.out.println("Symbolic method " + summary.info.getName() + " threw an exception");
       }
     } else {
       //TODO
@@ -283,11 +313,10 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   }
 
-  private TestCase setArguments(ArgumentSummary summary, StackFrame frame) {
+  private TestCase setArguments(ArgumentSummary summary, StackFrame frame, ThreadInfo th) {
     TestCase test = new TestCase(frame.getMethodInfo());
     test.args.putAll(summary.concreteArgs);
 
-    //TODO put in its own method
     for (LocalVarInfo var : summary.symbolicArgs) {
 
       //converting the solution into the correct type
@@ -333,16 +362,30 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
           }
           break;
 
-        case Types.T_VOID:
-        case Types.T_NONE:
-          //TODO this is an error condition
+        case Types.T_ARRAY:
+          ArrayExpression array = frame.getLocalAttr(var.getSlotIndex(), ArrayExpression.class);
+          int ref = frame.getLocalVariable(var.getSlotIndex());
+          ElementInfo ei = th.getElementInfo(ref);
+
+          if (array != null) {
+            //full symbolic
+            test.args.put(var, fullSymbolicArray());
+          } else if (ei.hasElementAttr(Expression.class)) {
+            //partial symbolic
+            test.args.put(var, partialSymbolicArray(ei));
+          } else {
+            //concrete
+            test.args.put(var, concreteArray(ei));
+          }
           break;
 
-        case Types.T_ARRAY:
         case Types.T_REFERENCE:
           //TODO handle references
           break;
 
+        case Types.T_VOID:
+        case Types.T_NONE:
+        //fallthrough, as this is another error condition
         default:
         //TODO: error condition
       }
@@ -357,6 +400,160 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     }
 
     models.get(test.method).add(test);
+  }
+
+  private Object partialSymbolicArray(ElementInfo ei) {
+    ArrayFields fields = ei.getArrayFields();
+    if (fields.isReferenceArray()) {
+      if (logger.isLoggable(Level.WARNING)) {
+        logger.log(Level.WARNING, "Reference arrays are not supported. This includes multi dimensional arrays.");
+      }
+      return null;
+    }
+
+    String type = Types.getTypeName(ei.getArrayType());
+    switch (type) {
+      case "byte":
+      case "char":
+      case "short":
+      case "int":
+      case "long":
+        Long[] longArray = new Long[fields.arrayLength()];
+        for (int i = 0; i < longArray.length; i++) {
+          SymbolicInteger exp = fields.getFieldAttr(i, SymbolicInteger.class);
+          if (exp.solution() == SymbolicInteger.UNDEFINED) {
+            exp.solution = 1;
+          }
+          longArray[i] = exp.solution();
+        }
+        return longArray;
+
+      case "float":
+      case "double":
+        Double[] doubleArray = new Double[fields.arrayLength()];
+        for (int i = 0; i < doubleArray.length; i++) {
+          SymbolicReal real = fields.getFieldAttr(i, SymbolicReal.class);
+          if (real.solution() == SymbolicReal.UNDEFINED) {
+            real.solution = 1.0;
+          }
+          doubleArray[i] = real.solution();
+        }
+        return doubleArray;
+
+      case "boolean":
+        Boolean[] booleanArray = new Boolean[fields.arrayLength()];
+        for (int i = 0; i < booleanArray.length; i++) {
+          SymbolicInteger symBool = fields.getFieldAttr(i, SymbolicInteger.class);
+          booleanArray[i] = symBool.solution == 1;
+        }
+        return booleanArray;
+
+      default:
+        throw new IllegalArgumentException("Unknown array type: " + type);
+
+    }
+  }
+
+  private Object concreteArray(ElementInfo ei) {
+    ArrayFields fields = ei.getArrayFields();
+    if (fields.isReferenceArray()) {
+      if (logger.isLoggable(Level.WARNING)) {
+        logger.log(Level.WARNING, "Reference arrays are not supported. This includes multi dimensional arrays.");
+      }
+      return null;
+    }
+
+    String type = Types.getTypeName(ei.getArrayType());
+    switch (type) {
+      case "byte":
+        byte[] bytes = fields.asByteArray();
+        Byte[] byteArray = new Byte[bytes.length];
+        for (int i = 0; i < bytes.length; i++) {
+          byteArray[i] = bytes[i];
+        }
+        return byteArray;
+      case "char":
+        char[] chars = fields.asCharArray();
+        Character[] characters = new Character[chars.length];
+        for (int i = 0; i < chars.length; i++) {
+          characters[i] = chars[i];
+        }
+        return characters;
+      case "short":
+        short[] shorts = fields.asShortArray();
+        Short[] shortArray = new Short[shorts.length];
+        for (int i = 0; i < shorts.length; i++) {
+          shortArray[i] = shorts[i];
+        }
+        return shortArray;
+      case "int":
+        int[] ints = fields.asIntArray();
+        Integer[] intArray = new Integer[ints.length];
+        for (int i = 0; i < ints.length; i++) {
+          intArray[i] = ints[i];
+        }
+        return intArray;
+      case "long":
+        long[] longs = fields.asLongArray();
+        Long[] longArray = new Long[longs.length];
+        for (int i = 0; i < longs.length; i++) {
+          longArray[i] = longs[i];
+        }
+        return longArray;
+      case "float":
+        float[] floats = fields.asFloatArray();
+        Float[] floatArray = new Float[floats.length];
+        for (int i = 0; i < floats.length; i++) {
+          floatArray[i] = floats[i];
+        }
+        return floatArray;
+      case "double":
+        double[] doubles = fields.asDoubleArray();
+        Double[] doubleArray = new Double[doubles.length];
+        for (int i = 0; i < doubles.length; i++) {
+          doubleArray[i] = doubles[i];
+        }
+        return doubleArray;
+      case "boolean":
+        boolean[] booleans = fields.asBooleanArray();
+        Boolean[] boolArray = new Boolean[booleans.length];
+        for (int i = 0; i < booleans.length; i++) {
+          boolArray[i] = booleans[i];
+        }
+        return boolArray;
+      default:
+        throw new IllegalArgumentException("Unknown array type: " + type);
+    }
+  }
+
+  private Object fullSymbolicArray() {
+    return new Object[0];
+  }
+
+  /**
+   * Turns ElementInfo objects into an actual instance for reference types.
+   * Returns the value for basic types.
+   *
+   * @param var
+   * @param val
+   * @return
+   */
+  private Object concreteVar(LocalVarInfo var, Object val) {
+    String signature = var.getSignature();
+
+    if (Types.isBasicType(var.getType())) {
+      return val;
+    }
+
+    ElementInfo ei = (ElementInfo) val;
+    if (Types.isArray(var.getSignature())) {
+      return concreteArray(ei);
+    } else {
+      if (logger.isLoggable(Level.WARNING)) {
+        logger.log(Level.WARNING, "Reference types other than arrays are not supported yet!");
+      }
+      return null;
+    }
   }
 
   @Override
@@ -406,16 +603,18 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     try {
       Class queried = Class.forName(name);
 
-      if (!superClass.isAssignableFrom(queried)) {
-        return null;
-      }
-
       Class[] argClasses = new Class[args.length];
       for (int i = 0; i < args.length; i++) {
         argClasses[i] = args[i].getClass();
       }
 
-      return (T) queried.getConstructor(argClasses).newInstance(args);
+      Object instance = queried.getConstructor(argClasses).newInstance(args);
+
+      if (superClass.isAssignableFrom(queried)) {
+        return (T) instance;
+      } else {
+        return null;
+      }
     } catch (ClassNotFoundException | NoSuchMethodException | SecurityException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
       logger.severe("Could not instantiate an instance of class " + name);
     }
@@ -443,6 +642,34 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       symbolicArgs = new ArrayList<>();
       concreteArgs = new HashMap<>();
       this.info = info;
+    }
+
+    @Override
+    public String toString() {
+      StringBuilder builder = new StringBuilder("Summary for ");
+      builder.append(info.getName()).append("{\n");
+
+      if (symbolicArgs.size() > 0) {
+        builder.append("\tSymbolic arguments:\n\t");
+        for (int i = 0; i < symbolicArgs.size(); i++) {
+          if (i > 0) {
+            builder.append(", ");
+          }
+          builder.append(symbolicArgs.get(i).getName());
+        }
+        builder.append("\n");
+      }
+
+      if (concreteArgs.size() > 0) {
+        builder.append("\tConcrete args:\n");
+        for (Map.Entry<LocalVarInfo, Object> entry : concreteArgs.entrySet()) {
+          LocalVarInfo var = entry.getKey();
+          Object val = entry.getValue();
+          builder.append("\t").append(var.getName()).append(":\t").append(val).append("\n");
+        }
+      }
+      builder.append("}");
+      return builder.toString();
     }
 
   }
