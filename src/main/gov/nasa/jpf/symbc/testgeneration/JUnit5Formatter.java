@@ -179,7 +179,7 @@ public class JUnit5Formatter extends TestcaseFormatter {
     writer.indent(indents).append(test.method.getReturnTypeName()).append(" expected = ");
     if (Types.isArray(test.method.getReturnType())) {
       formatArray(writer, test.returnValue);
-    } else if (Types.isBasicType(test.method.getReturnType())) {
+    } else {
       writer.append(test.returnValue);
     }
     writer.append(";").append(NL);

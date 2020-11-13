@@ -17,7 +17,6 @@ import gov.nasa.jpf.symbc.numeric.RealExpression;
 import gov.nasa.jpf.symbc.numeric.SymbolicInteger;
 import gov.nasa.jpf.symbc.numeric.SymbolicReal;
 import gov.nasa.jpf.util.JPFLogger;
-import gov.nasa.jpf.vm.ArrayFields;
 import gov.nasa.jpf.vm.ChoiceGenerator;
 import gov.nasa.jpf.vm.ClassInfo;
 import gov.nasa.jpf.vm.ElementInfo;
@@ -49,19 +48,28 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   private Map<MethodInfo, Set<TestCase>> models;
   private final JPFLogger logger = JPF.getLogger("gov.nasa.jpf.symbc.testgeneration.SymbolicTestGeneratorListener");
+  
   private String formatterClassName;
-  private Config config;
   private boolean optimize;
+  private boolean symarrays;
+  private String fileName;
 
+  private VM vm;
+  private Config config;
+  
   public SymbolicTestGeneratorListener(Config conf, JPF jpf) {
     config = conf;
+    vm = jpf.getVM();
+
     //fetching an optional abbreviation
     String abbreviation = conf.getString("SymbolicTestGeneratorListener.abbreviation", "SymbolicTestGeneratorListener");
     formatterClassName = conf.getString(abbreviation + ".formatter", "gov.nasa.jpf.symbc.testgeneration.JUnit5Formatter");
-
     optimize = conf.getBoolean(abbreviation + ".optimize", false);
+    symarrays = conf.getBoolean("symbolic.arrays", false);
+    
 
     jpf.addPublisherExtension(ConsolePublisher.class, this);
+
     models = new HashMap<>();
   }
 
@@ -96,14 +104,13 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       assert lvi != null : "ERROR: No debug information available";
 
-      if (hasObjects(mi)) {
+      if (!isSupported(mi)) {
         if (logger.isLoggable(Level.WARNING)) {
           logger.log(Level.WARNING, "No tests are generated for " + mi.getName() + ", as it has a non array reference type");
         }
         return;
       }
 
-      //iterating over all arguments except 'this'
       int startIdx = 0;
       if (!mi.isStatic()) {
         startIdx = 1;
@@ -115,9 +122,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
         if (symVars.get(argIndex).equalsIgnoreCase("sym")) {
           //symbolic
-          summary.symbolicArgs.add(var);
-          
-          //collect all the symbolic varaiables
+          summary.symbolicArgs.put(var, ArgumentWrapper.wrapper(var, frame));
         } else {
           //concrete
           //this reference is not passed in the args array
@@ -162,6 +167,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       logger.finer(pc);
     }
 
+    //TODO:
     System.out.println("Path condition:");
     System.out.println(pc);
 
@@ -182,7 +188,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       case Types.T_SHORT:
       case Types.T_INT:
       case Types.T_LONG:
-        IntegerExpression integer = (IntegerExpression) ret.getReturnAttr(currentThread, IntegerExpression.class);
+        IntegerExpression integer = ret.getReturnAttr(currentThread, IntegerExpression.class);
         if (integer == null) {
           //concrete
           test.returnValue = ret.getReturnValue(currentThread);
@@ -194,7 +200,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       case Types.T_DOUBLE:
       case Types.T_FLOAT:
-        RealExpression real = (RealExpression) ret.getReturnAttr(currentThread, RealExpression.class);
+        RealExpression real = ret.getReturnAttr(currentThread, RealExpression.class);
         if (real == null) {
           //concrete
           test.returnValue = ret.getReturnValue(currentThread);
@@ -227,20 +233,17 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
         if (array != null) {
           //array fully symbolic
-          test.returnValue = "symbolic array";
-        } else if (ei.hasElementAttr(Expression.class)) {
-          //partial symbollic
-          test.returnValue = partialSymbolicArray(ei);
+          test.returnValue = fullSymbolicArray();
         } else {
-          //concrete array
-          test.returnValue = concreteArray(ei);
+          //deals with arrays that contain some or all symbolic elements
+          test.returnValue = partialSymbolicArray(ei);
         }
         break;
 
       case Types.T_REFERENCE:
       //dont know what to do yet so fallthrough
       default:
-        test.returnValue = ret.getReturnValue(currentThread);
+        throw new IllegalArgumentException();
 
     }
 
@@ -328,6 +331,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     TestCase test = new TestCase(frame.getMethodInfo());
     test.args.putAll(summary.concreteArgs);
 
+    /*
     for (LocalVarInfo var : summary.symbolicArgs) {
 
       //converting the solution into the correct type
@@ -386,7 +390,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
             test.args.put(var, partialSymbolicArray(ei));
           } else {
             //concrete
-            test.args.put(var, concreteArray(ei));
+            test.args.put(var, partialSymbolicArray(ei));
           }
           break;
 
@@ -400,6 +404,15 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
         default:
         //TODO: error condition
       }
+    
+    }
+
+     */
+    for (Map.Entry<LocalVarInfo, ArgumentWrapper> entry : summary.symbolicArgs.entrySet()) {
+      LocalVarInfo var = entry.getKey();
+      ArgumentWrapper wrapper = entry.getValue();
+      wrapper.setDefault();
+      test.args.put(var, wrapper.solution());
     }
 
     return test;
@@ -420,155 +433,172 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
    * @param mi method to check
    * @return
    */
-  private boolean hasObjects(MethodInfo mi) {
-    for (LocalVarInfo var : mi.getArgumentLocalVars()) {
-      byte typecode = Types.getTypeCode(var.getType());
-      if (typecode == Types.T_REFERENCE) {
-        return true;
-      } else if (typecode == Types.T_ARRAY) {
-        //check if element type is basic
-        if (!Types.isBasicType(Types.getArrayElementType(var.getType()))) {
-          return true;
+  private boolean isSupported(MethodInfo mi) {
+    //reference arrays only with fully symbolic arrays
+    if (symarrays) {
+      for (LocalVarInfo var : mi.getArgumentLocalVars()) {
+        String leaftype = getLeafType(var.getSignature());
+        if (!Types.isBasicType(Types.getTypeName(leaftype))) {
+          return false;
         }
       }
+
+      String leaftype = getLeafType(mi.getReturnType());
+      return Types.isBasicType(Types.getTypeName(leaftype)) || mi.getReturnTypeName().equals("void");
+    } else {
+      for (LocalVarInfo var : mi.getArgumentLocalVars()) {
+        if (!isBasicOrBasicArray(mi.getReturnType())) {
+          return false;
+        }
+      }
+
+      return isBasicOrBasicArray(mi.getReturnType()) || mi.getReturnTypeName().equals("void");
     }
 
-    byte returnTypecode = Types.getTypeCode(mi.getReturnType());
-    if (returnTypecode == Types.T_REFERENCE) {
+  }
+
+  private boolean isBasicOrBasicArray(String siganture) {
+    String typename = Types.getTypeName(siganture);
+    if (Types.isBasicType(typename)) {
       return true;
-    } else if (returnTypecode == Types.T_ARRAY) {
-      return !Types.isBasicType(Types.getArrayElementType(mi.getReturnType()));
+    } else if (Types.isArray(siganture)) {
+      String elementTypename = Types.getTypeName(Types.getArrayElementType(siganture));
+      return Types.isBasicType(elementTypename);
+    } else {
+      return false;
     }
+  }
 
-    return false;
+  private String getLeafType(String signature) {
+    int i = 0;
+    while (i < signature.length() && signature.charAt(i) == '[') {
+      i++;
+    }
+    return signature.substring(i);
   }
 
   private Object partialSymbolicArray(ElementInfo ei) {
-    ArrayFields fields = ei.getArrayFields();
-    if (fields.isReferenceArray()) {
-      if (logger.isLoggable(Level.WARNING)) {
-        logger.log(Level.WARNING, "Reference arrays are not supported. This includes multi dimensional arrays.");
-      }
-      return null;
+    if (!ei.isArray()) {
+      throw new IllegalArgumentException("Not an array: " + ei.getType());
     }
 
-    String type = Types.getTypeName(ei.getArrayType());
-    switch (type) {
-      case "byte":
-      case "char":
-      case "short":
-      case "int":
-      case "long":
-        Long[] longArray = new Long[ei.arrayLength()];
-        for (int i = 0; i < ei.arrayLength(); i++) {
-          SymbolicInteger exp = ei.getElementAttr(i, SymbolicInteger.class);
-          if (exp == null) {
-            System.out.println("Index " + i + " has no Symbolic integer attached");
-          } else {
+    String siganture = ei.getArrayType();
+    if (Types.isArray(siganture)) {
+      Object[] result = new Object[ei.arrayLength()];
+      for (int i = 0; i < ei.arrayLength(); i++) {
+        int ref = ei.getReferenceElement(i);
+        ElementInfo info = vm.getElementInfo(ref);
+        result[i] = partialSymbolicArray(info);
+      }
+      return result;
+    } else if (Types.isBasicType(Types.getTypeName(siganture))) {
+      IntegerExpression symint;
+      RealExpression symreal;
 
-            if (exp.solution() == SymbolicInteger.UNDEFINED) {
-              exp.solution = 1;
+      String type = Types.getTypeName(siganture);
+      switch (type) {
+        case "byte":
+          Byte[] bytes = new Byte[ei.arrayLength()];
+          for (int i = 0; i < ei.arrayLength(); i++) {
+            symint = ei.getElementAttr(i, IntegerExpression.class);
+            if (symint == null) {
+              bytes[i] = ei.getByteElement(i);
+            } else {
+              bytes[i] = (byte) symint.solution();
             }
-            longArray[i] = exp.solution();
           }
-        }
-        return longArray;
+          return bytes;
 
-      case "float":
-      case "double":
-        Double[] doubleArray = new Double[ei.arrayLength()];
-        for (int i = 0; i < ei.arrayLength(); i++) {
-          SymbolicReal real = ei.getElementAttr(i, SymbolicReal.class);
-          if (real.solution() == SymbolicReal.UNDEFINED) {
-            real.solution = 1.0;
+        case "char":
+          Character[] chars = new Character[ei.arrayLength()];
+          for (int i = 0; i < ei.arrayLength(); i++) {
+            symint = ei.getElementAttr(i, IntegerExpression.class);
+            if (symint == null) {
+              chars[i] = ei.getCharElement(i);
+            } else {
+              chars[i] = (char) symint.solution();
+            }
           }
-          doubleArray[i] = real.solution();
-        }
-        return doubleArray;
+          return chars;
 
-      case "boolean":
-        Boolean[] booleanArray = new Boolean[ei.arrayLength()];
-        for (int i = 0; i < ei.arrayLength(); i++) {
-          SymbolicInteger symBool = ei.getElementAttr(i, SymbolicInteger.class);
-          booleanArray[i] = symBool.solution == 1;
-        }
-        return booleanArray;
+        case "short":
+          Short[] shorts = new Short[ei.arrayLength()];
+          for (int i = 0; i < ei.arrayLength(); i++) {
+            symint = ei.getElementAttr(i, IntegerExpression.class);
+            if (symint == null) {
+              shorts[i] = ei.getShortElement(i);
+            } else {
+              shorts[i] = (short) symint.solution();
+            }
+          }
+          return shorts;
 
-      default:
-        throw new IllegalArgumentException("Unknown array type: " + type);
+        case "int":
+          Integer[] ints = new Integer[ei.arrayLength()];
+          for (int i = 0; i < ei.arrayLength(); i++) {
+            symint = ei.getElementAttr(i, IntegerExpression.class);
+            if (symint == null) {
+              ints[i] = ei.getIntElement(i);
+            } else {
+              ints[i] = (int) symint.solution();
+            }
+          }
+          return ints;
 
-    }
-  }
+        case "long":
+          Long[] longs = new Long[ei.arrayLength()];
+          for (int i = 0; i < ei.arrayLength(); i++) {
+            symint = ei.getElementAttr(i, IntegerExpression.class);
+            if (symint == null) {
+              longs[i] = ei.getLongElement(i);
+            } else {
+              longs[i] = symint.solution();
+            }
+          }
+          return longs;
 
-  private Object concreteArray(ElementInfo ei) {
-    ArrayFields fields = ei.getArrayFields();
-    if (fields.isReferenceArray()) {
-      if (logger.isLoggable(Level.WARNING)) {
-        logger.log(Level.WARNING, "Reference arrays are not supported. This includes multi dimensional arrays.");
+        case "float":
+          Float[] floats = new Float[ei.arrayLength()];
+          for (int i = 0; i < ei.arrayLength(); i++) {
+            symreal = ei.getElementAttr(i, RealExpression.class);
+            if (symreal == null) {
+              floats[i] = ei.getFloatElement(i);
+            } else {
+              floats[i] = (float) symreal.solution();
+            }
+          }
+          return floats;
+
+        case "double":
+          Double[] doubles = new Double[ei.arrayLength()];
+          for (int i = 0; i < ei.arrayLength(); i++) {
+            symreal = ei.getElementAttr(i, RealExpression.class);
+            if (symreal == null) {
+              doubles[i] = ei.getDoubleElement(i);
+            } else {
+              doubles[i] = symreal.solution();
+            }
+          }
+          return doubles;
+
+        case "boolean":
+          Boolean[] booleans = new Boolean[ei.arrayLength()];
+          for (int i = 0; i < ei.arrayLength(); i++) {
+            symint = ei.getElementAttr(i, IntegerExpression.class);
+            if (symint == null) {
+              booleans[i] = ei.getBooleanElement(i);
+            } else {
+              booleans[i] = symint.solution() == 1;
+            }
+          }
+          return booleans;
+
+        default:
+          //should not happen, element type is basic
+          throw new IllegalArgumentException("Unsuppported array type: " + siganture);
       }
-      return null;
-    }
-
-    String type = Types.getTypeName(ei.getArrayType());
-    switch (type) {
-      case "byte":
-        byte[] bytes = fields.asByteArray();
-        Byte[] byteArray = new Byte[bytes.length];
-        for (int i = 0; i < bytes.length; i++) {
-          byteArray[i] = bytes[i];
-        }
-        return byteArray;
-      case "char":
-        char[] chars = fields.asCharArray();
-        Character[] characters = new Character[chars.length];
-        for (int i = 0; i < chars.length; i++) {
-          characters[i] = chars[i];
-        }
-        return characters;
-      case "short":
-        short[] shorts = fields.asShortArray();
-        Short[] shortArray = new Short[shorts.length];
-        for (int i = 0; i < shorts.length; i++) {
-          shortArray[i] = shorts[i];
-        }
-        return shortArray;
-      case "int":
-        int[] ints = fields.asIntArray();
-        Integer[] intArray = new Integer[ints.length];
-        for (int i = 0; i < ints.length; i++) {
-          intArray[i] = ints[i];
-        }
-        return intArray;
-      case "long":
-        long[] longs = fields.asLongArray();
-        Long[] longArray = new Long[longs.length];
-        for (int i = 0; i < longs.length; i++) {
-          longArray[i] = longs[i];
-        }
-        return longArray;
-      case "float":
-        float[] floats = fields.asFloatArray();
-        Float[] floatArray = new Float[floats.length];
-        for (int i = 0; i < floats.length; i++) {
-          floatArray[i] = floats[i];
-        }
-        return floatArray;
-      case "double":
-        double[] doubles = fields.asDoubleArray();
-        Double[] doubleArray = new Double[doubles.length];
-        for (int i = 0; i < doubles.length; i++) {
-          doubleArray[i] = doubles[i];
-        }
-        return doubleArray;
-      case "boolean":
-        boolean[] booleans = fields.asBooleanArray();
-        Boolean[] boolArray = new Boolean[booleans.length];
-        for (int i = 0; i < booleans.length; i++) {
-          boolArray[i] = booleans[i];
-        }
-        return boolArray;
-      default:
-        throw new IllegalArgumentException("Unknown array type: " + type);
+    } else {
+      throw new IllegalArgumentException("Unsupported array type: " + siganture);
     }
   }
 
@@ -593,7 +623,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     ElementInfo ei = (ElementInfo) val;
     if (Types.isArray(var.getSignature())) {
-      return concreteArray(ei);
+      return partialSymbolicArray(ei);
     } else {
       if (logger.isLoggable(Level.WARNING)) {
         logger.log(Level.WARNING, "Reference types other than arrays are not supported yet!");
@@ -604,14 +634,17 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   @Override
   public void publishFinished(Publisher publisher) {
-    TestcaseFormatter formatter = instanceFromClassname(formatterClassName, TestcaseFormatter.class, new Object[]{config});
+    Object instance = instanceFromClassname(formatterClassName, new Object[]{config});
 
-    if (formatter == null) {
+    if (instance == null || !(instance instanceof TestcaseFormatter)) {
       if (logger.isLoggable(Level.SEVERE)) {
         logger.severe("Could not output any test cases as no formatter could be created.");
       }
       return;
     }
+
+    TestcaseFormatter formatter = (TestcaseFormatter) instance;
+
     publisher.publishTopicStart("Test cases");
 
     //print out everything
@@ -645,22 +678,16 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     return false;
   }
 
-  private <T> T instanceFromClassname(String name, Class<T> superClass, Object[] args) {
+  private Object instanceFromClassname(String name, Object[] args) {
     try {
-      Class queried = Class.forName(name);
+      Class<?> queried = Class.forName(name);
 
       Class[] argClasses = new Class[args.length];
       for (int i = 0; i < args.length; i++) {
         argClasses[i] = args[i].getClass();
       }
 
-      Object instance = queried.getConstructor(argClasses).newInstance(args);
-
-      if (superClass.isAssignableFrom(queried)) {
-        return (T) instance;
-      } else {
-        return null;
-      }
+      return queried.getConstructor(argClasses).newInstance(args);
     } catch (ClassNotFoundException | NoSuchMethodException | SecurityException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
       logger.severe("Could not instantiate an instance of class " + name);
     }
@@ -672,7 +699,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     /**
      * Mapping symbolic arguments to their concrete values
      */
-    public List<LocalVarInfo> symbolicArgs;
+    public Map<LocalVarInfo, ArgumentWrapper> symbolicArgs;
 
     /**
      * Mapping concrete arguments to their values
@@ -684,16 +711,9 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
      */
     public MethodInfo info;
 
-    public Set<SymbolicInteger> symInts;
-    public Set<SymbolicReal> symReals;
-    public Set<ArrayExpression> symArrays;
-
     public ArgumentSummary(MethodInfo info) {
-      symbolicArgs = new ArrayList<>();
+      symbolicArgs = new HashMap<>();
       concreteArgs = new HashMap<>();
-      symInts = new HashSet<>();
-      symReals = new HashSet<>();
-      symArrays = new HashSet<>();
       this.info = info;
     }
 
@@ -703,14 +723,12 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       builder.append(info.getName()).append("{\n");
 
       if (symbolicArgs.size() > 0) {
-        builder.append("\tSymbolic arguments:\n\t");
-        for (int i = 0; i < symbolicArgs.size(); i++) {
-          if (i > 0) {
-            builder.append(", ");
-          }
-          builder.append(symbolicArgs.get(i).getName());
+        builder.append("\tSymbolic arguments:\n");
+        for (Map.Entry<LocalVarInfo, ArgumentWrapper> entry : symbolicArgs.entrySet()) {
+          LocalVarInfo var = entry.getKey();
+          ArgumentWrapper wrapper = entry.getValue();
+          builder.append('\t').append(var.getName()).append(":\t").append(wrapper.solution()).append("\n");
         }
-        builder.append("\n");
       }
 
       if (concreteArgs.size() > 0) {
@@ -725,6 +743,189 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       return builder.toString();
     }
 
+  }
+
+  private static interface ArgumentWrapper {
+
+    public Object solution();
+
+    public void setDefault();
+
+    public static ArgumentWrapper wrapper(LocalVarInfo var, StackFrame frame) {
+      if (Types.isArray(var.getSignature())) {
+        int ref = frame.getLocalVariable(var.getSlotIndex());
+        ElementInfo ei = VM.getVM().getElementInfo(ref);
+        return new PartialSymArrayWrapper(ei);
+      } else if (Types.isBasicType(Types.getTypeName(var.getSignature()))) {
+        switch (Types.getTypeName(var.getSignature())) {
+          case "byte":
+          case "char":
+          case "short":
+          case "int":
+          case "long":
+            return new SymIntWrapper(frame.getLocalAttr(var.getSlotIndex(), SymbolicInteger.class));
+
+          case "boolean":
+            return new SymBollWrapper(frame.getLocalAttr(var.getSlotIndex(), SymbolicInteger.class));
+
+          case "float":
+          case "double":
+            return new SymRealWrapper(frame.getLocalAttr(var.getSlotIndex(), SymbolicReal.class));
+
+          default:
+            throw new IllegalArgumentException("Unknown type: " + var.getType());
+        }
+      } else {
+        //Unsupported
+        throw new IllegalArgumentException("Unsupported type: " + var.getType());
+      }
+    }
+  }
+
+  private static class SymIntWrapper implements ArgumentWrapper {
+
+    private SymbolicInteger symint;
+
+    public SymIntWrapper(SymbolicInteger symint) {
+      this.symint = symint;
+    }
+
+    @Override
+    public Object solution() {
+      return symint.solution();
+    }
+
+    @Override
+    public void setDefault() {
+      if (symint.solution == SymbolicInteger.UNDEFINED) {
+        symint.solution = 1;
+      }
+    }
+
+  }
+
+  private static class SymBollWrapper implements ArgumentWrapper {
+
+    private SymbolicInteger symint;
+
+    public SymBollWrapper(SymbolicInteger symint) {
+      this.symint = symint;
+    }
+
+    @Override
+    public Object solution() {
+      return symint.solution() == 1;
+    }
+
+    @Override
+    public void setDefault() {
+      symint.solution = 1;
+    }
+
+  }
+
+  private static class SymRealWrapper implements ArgumentWrapper {
+
+    private SymbolicReal symreal;
+
+    public SymRealWrapper(SymbolicReal symreal) {
+      this.symreal = symreal;
+    }
+
+    @Override
+    public Object solution() {
+      return symreal.solution();
+    }
+
+    @Override
+    public void setDefault() {
+      if (symreal.solution == SymbolicReal.UNDEFINED) {
+        symreal.solution = 1.0;
+      }
+    }
+
+  }
+
+  private static class SymArrayWrapper implements ArgumentWrapper {
+
+    private ArrayExpression symArray;
+
+    public SymArrayWrapper(ArrayExpression symArray) {
+      this.symArray = symArray;
+    }
+
+    @Override
+    public Object solution() {
+      throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+    }
+
+    @Override
+    public void setDefault() {
+      throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+    }
+
+  }
+
+  private static class PartialSymArrayWrapper implements ArgumentWrapper {
+
+    ElementInfo ei;
+    ArgumentWrapper[] elements;
+
+    public PartialSymArrayWrapper(ElementInfo ei) {
+      this.ei = ei;
+      elements = new ArgumentWrapper[ei.arrayLength()];
+      collectVars();
+    }
+
+    private void collectVars() {
+      String typename = Types.getTypeName(ei.getArrayType());
+
+      if (Types.isBasicType(typename)) {
+        switch (typename) {
+          case "byte":
+          case "char":
+          case "short":
+          case "int":
+          case "long":
+          case "boolean":
+            for (int i = 0; i < ei.arrayLength(); i++) {
+              SymbolicInteger symint = ei.getElementAttr(i, SymbolicInteger.class);
+              elements[i] = new SymIntWrapper(symint);
+            }
+            break;
+
+          case "float":
+          case "double":
+            for (int i = 0; i < ei.arrayLength(); i++) {
+              SymbolicReal symreal = ei.getElementAttr(i, SymbolicReal.class);
+              elements[i] = new SymRealWrapper(symreal);
+            }
+            break;
+
+          default:
+            //should not happen
+            throw new AssertionError();
+        }
+      } else {
+        throw new IllegalArgumentException("Unsupported array type:" + ei.getType());
+      }
+    }
+
+    @Override
+    public Object solution() {
+      Object[] result = new Object[elements.length];
+      for (int i = 0; i < elements.length; i++) {
+        result[i] = elements[i].solution();
+      }
+      return result;
+    }
+
+    @Override
+    public void setDefault() {
+      for (ArgumentWrapper element : elements) {
+        element.setDefault();
+      }
+    }
   }
 
 }
