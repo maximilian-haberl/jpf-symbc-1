@@ -6,7 +6,10 @@
 package gov.nasa.jpf.symbc.testgeneration;
 
 import gov.nasa.jpf.Config;
+import gov.nasa.jpf.vm.MethodInfo;
 import java.io.Writer;
+import java.util.Map;
+import java.util.Set;
 
 /**
  *
@@ -30,7 +33,9 @@ public abstract class TestcaseFormatter {
    * @return String representation of the test case
    */
   public abstract String format(TestCase test);
-
+  
+  public abstract void format(Map<MethodInfo, Set<TestCase>> tests, Writer writer);
+  
   public TestcaseFormatter(Config config) {
   }
 }

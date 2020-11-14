@@ -5,11 +5,10 @@ import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.ListenerAdapter;
 import gov.nasa.jpf.jvm.bytecode.JVMInvokeInstruction;
 import gov.nasa.jpf.jvm.bytecode.JVMReturnInstruction;
-import gov.nasa.jpf.report.ConsolePublisher;
+import gov.nasa.jpf.report.GenericFilePublisher;
 import gov.nasa.jpf.report.Publisher;
 import gov.nasa.jpf.symbc.arrays.ArrayExpression;
 import gov.nasa.jpf.symbc.bytecode.BytecodeUtils;
-import gov.nasa.jpf.symbc.numeric.Expression;
 import gov.nasa.jpf.symbc.numeric.IntegerExpression;
 import gov.nasa.jpf.symbc.numeric.PCChoiceGenerator;
 import gov.nasa.jpf.symbc.numeric.PathCondition;
@@ -28,11 +27,9 @@ import gov.nasa.jpf.vm.MethodInfo;
 import gov.nasa.jpf.vm.StackFrame;
 import gov.nasa.jpf.vm.Types;
 import gov.nasa.jpf.vm.VM;
-import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -46,17 +43,16 @@ import java.util.logging.Level;
  */
 public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
-  private Map<MethodInfo, Set<TestCase>> models;
+  private final Map<MethodInfo, Set<TestCase>> models;
   private final JPFLogger logger = JPF.getLogger("gov.nasa.jpf.symbc.testgeneration.SymbolicTestGeneratorListener");
-  
-  private String formatterClassName;
-  private boolean optimize;
-  private boolean symarrays;
-  private String fileName;
 
-  private VM vm;
-  private Config config;
-  
+  private final String formatterClassName;
+  private final boolean optimize;
+  private final boolean symarrays;
+
+  private final VM vm;
+  private final Config config;
+
   public SymbolicTestGeneratorListener(Config conf, JPF jpf) {
     config = conf;
     vm = jpf.getVM();
@@ -66,9 +62,8 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     formatterClassName = conf.getString(abbreviation + ".formatter", "gov.nasa.jpf.symbc.testgeneration.JUnit5Formatter");
     optimize = conf.getBoolean(abbreviation + ".optimize", false);
     symarrays = conf.getBoolean("symbolic.arrays", false);
-    
 
-    jpf.addPublisherExtension(ConsolePublisher.class, this);
+    jpf.addPublisherExtension(GenericFilePublisher.class, this);
 
     models = new HashMap<>();
   }
@@ -91,7 +86,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     /*
     we need to check if the stack frame for this method has already been created.
     In case we use fully symbolic arrays the invoke instruction will be executed twice.
-    The first time the correct stack frame has not been created. We dont want to attach
+    The first time the correct stack frame has not been created yet. We dont want to attach
     a summary in this case
      */
     boolean correctFrame = frame.getMethodInfo().getGlobalId() == mi.getGlobalId();
@@ -122,11 +117,18 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
         if (symVars.get(argIndex).equalsIgnoreCase("sym")) {
           //symbolic
-          summary.symbolicArgs.put(var, ArgumentWrapper.wrapper(var, frame));
+          if (Types.isArray(var.getSignature()) && symarrays) {
+            if (logger.isLoggable(Level.WARNING)) {
+              logger.warning("Fully symbolic arrays are not supported. No tests generated for " + mi.getName());
+            }
+            return;
+          } else {
+            summary.symbolicArgs.put(var, SymbolicArgumentWrapper.wrapper(var, frame));
+          }
         } else {
           //concrete
           //this reference is not passed in the args array
-          Object val = concreteVar(var, args[i - startIdx]);
+          Object val = concreteVar(var, args[argIndex]);
           summary.concreteArgs.put(var, val);
         }
       }
@@ -167,20 +169,8 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
       logger.finer(pc);
     }
 
-    //TODO:
-    System.out.println("Path condition:");
-    System.out.println(pc);
-
     TestCase test = setArguments(summary, frame, currentThread);
 
-    //TODO: remove
-    //System.out.println(mi.getReturnTypeName());
-    if (!mi.getReturnTypeName().equalsIgnoreCase("void")) {
-      Expression returnExpression = ret.getReturnAttr(currentThread, Expression.class);
-      if (returnExpression != null) {
-        System.out.println("Return expression: " + returnExpression.toString());
-      }
-    }
     switch (mi.getReturnTypeCode()) {
       //a lot of fallthrough because all integers are handled the same
       case Types.T_BYTE:
@@ -331,86 +321,9 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     TestCase test = new TestCase(frame.getMethodInfo());
     test.args.putAll(summary.concreteArgs);
 
-    /*
-    for (LocalVarInfo var : summary.symbolicArgs) {
-
-      //converting the solution into the correct type
-      byte type = Types.getTypeCode(var.getSignature());
-      switch (type) {
-        case Types.T_BYTE:
-        case Types.T_CHAR:
-        case Types.T_SHORT:
-        case Types.T_INT:
-        case Types.T_LONG:
-          //solution returns a long, which is fine for every integer type
-          IntegerExpression integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
-          long integerSolution = integer.solution();
-          if (integerSolution == SymbolicInteger.UNDEFINED) {
-            //we use a default value
-            test.args.put(var, 1);
-            frame.getLocalAttr(var.getSlotIndex(), SymbolicInteger.class).solution = 1;
-          } else {
-            test.args.put(var, integerSolution);
-          }
-          break;
-
-        case Types.T_FLOAT:
-        case Types.T_DOUBLE:
-          RealExpression real = frame.getLocalAttr(var.getSlotIndex(), RealExpression.class);
-          double realSolution = real.solution();
-          if (realSolution == SymbolicReal.UNDEFINED) {
-            test.args.put(var, 1.0);
-            frame.getLocalAttr(var.getSlotIndex(), SymbolicReal.class).solution = 1.0;
-          } else {
-            test.args.put(var, real.solution());
-          }
-          break;
-
-        case Types.T_BOOLEAN:
-          integer = frame.getLocalAttr(var.getSlotIndex(), IntegerExpression.class);
-          if (integer.solution() == SymbolicInteger.UNDEFINED) {
-            test.args.put(var, false);
-            frame.getLocalAttr(var.getSlotIndex(), SymbolicInteger.class).solution = 0;
-          } else {
-            boolean boolVal = integer.solution() == 1;
-            test.args.put(var, boolVal);
-          }
-          break;
-
-        case Types.T_ARRAY:
-          ArrayExpression array = frame.getLocalAttr(var.getSlotIndex(), ArrayExpression.class);
-          int ref = frame.getLocalVariable(var.getSlotIndex());
-          ElementInfo ei = th.getElementInfo(ref);
-
-          if (array != null) {
-            //full symbolic
-            test.args.put(var, fullSymbolicArray());
-          } else if (ei.hasElementAttr(Expression.class)) {
-            //partial symbolic
-            test.args.put(var, partialSymbolicArray(ei));
-          } else {
-            //concrete
-            test.args.put(var, partialSymbolicArray(ei));
-          }
-          break;
-
-        case Types.T_REFERENCE:
-          //TODO handle references
-          break;
-
-        case Types.T_VOID:
-        case Types.T_NONE:
-        //fallthrough, as this is another error condition
-        default:
-        //TODO: error condition
-      }
-    
-    }
-
-     */
-    for (Map.Entry<LocalVarInfo, ArgumentWrapper> entry : summary.symbolicArgs.entrySet()) {
+    for (Map.Entry<LocalVarInfo, SymbolicArgumentWrapper> entry : summary.symbolicArgs.entrySet()) {
       LocalVarInfo var = entry.getKey();
-      ArgumentWrapper wrapper = entry.getValue();
+      SymbolicArgumentWrapper wrapper = entry.getValue();
       wrapper.setDefault();
       test.args.put(var, wrapper.solution());
     }
@@ -434,29 +347,23 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
    * @return
    */
   private boolean isSupported(MethodInfo mi) {
-    //reference arrays only with fully symbolic arrays
-    if (symarrays) {
-      for (LocalVarInfo var : mi.getArgumentLocalVars()) {
-        String leaftype = getLeafType(var.getSignature());
-        if (!Types.isBasicType(Types.getTypeName(leaftype))) {
-          return false;
-        }
-      }
+    LocalVarInfo[] arguments = mi.getArgumentLocalVars();
 
-      String leaftype = getLeafType(mi.getReturnType());
-      return Types.isBasicType(Types.getTypeName(leaftype)) || mi.getReturnTypeName().equals("void");
-    } else {
-      for (LocalVarInfo var : mi.getArgumentLocalVars()) {
-        if (!isBasicOrBasicArray(mi.getReturnType())) {
-          return false;
-        }
-      }
-
-      return isBasicOrBasicArray(mi.getReturnType()) || mi.getReturnTypeName().equals("void");
+    //ignore 'this' for non-static methods
+    int start = 1;
+    if (mi.isStatic()) {
+      start = 0;
     }
 
-  }
+    for (int i = start; i < arguments.length; i++) {
+      if (!isBasicOrBasicArray(arguments[i].getSignature())) {
+        return false;
+      }
+    }
 
+    return isBasicOrBasicArray(mi.getReturnType()) || mi.getReturnTypeCode() == Types.T_VOID;
+  }
+  
   private boolean isBasicOrBasicArray(String siganture) {
     String typename = Types.getTypeName(siganture);
     if (Types.isBasicType(typename)) {
@@ -467,14 +374,6 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     } else {
       return false;
     }
-  }
-
-  private String getLeafType(String signature) {
-    int i = 0;
-    while (i < signature.length() && signature.charAt(i) == '[') {
-      i++;
-    }
-    return signature.substring(i);
   }
 
   private Object partialSymbolicArray(ElementInfo ei) {
@@ -615,8 +514,6 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
    * @return
    */
   private Object concreteVar(LocalVarInfo var, Object val) {
-    String signature = var.getSignature();
-
     if (Types.isBasicType(var.getType())) {
       return val;
     }
@@ -634,6 +531,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   @Override
   public void publishFinished(Publisher publisher) {
+    //setting up the formatter
     Object instance = instanceFromClassname(formatterClassName, new Object[]{config});
 
     if (instance == null || !(instance instanceof TestcaseFormatter)) {
@@ -645,26 +543,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     TestcaseFormatter formatter = (TestcaseFormatter) instance;
 
-    publisher.publishTopicStart("Test cases");
-
-    //print out everything
-    PrintWriter pw = publisher.getOut();
-    for (Map.Entry<MethodInfo, Set<TestCase>> entry : models.entrySet()) {
-      MethodInfo mi = entry.getKey();
-      Set<TestCase> testCases = entry.getValue();
-
-      if (!mi.isStatic() && !hasTrivialConstructor(mi.getClassInfo())) {
-        logger.log(Level.WARNING, String.format("Cannot generate test cases for %s as the declaring class %s does not have a trivial constructor", mi.getName(), mi.getClassName()));
-        continue;
-      }
-
-      for (TestCase test : testCases) {
-        formatter.format(test, pw);
-      }
-    }
-    pw.flush();
-
-    publisher.publishTopicEnd("Test cases");
+    formatter.format(filterTests(models), publisher.getOut());
   }
 
   private boolean hasTrivialConstructor(ClassInfo ci) {
@@ -676,6 +555,21 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     }
 
     return false;
+  }
+
+  private Map<MethodInfo, Set<TestCase>> filterTests(Map<MethodInfo, Set<TestCase>> tests) {
+    Map<MethodInfo, Set<TestCase>> result = new HashMap<>();
+
+    for (Map.Entry<MethodInfo, Set<TestCase>> entry : tests.entrySet()) {
+      MethodInfo mi = entry.getKey();
+      if (mi.isStatic() || hasTrivialConstructor(mi.getClassInfo())) {
+        result.put(mi, entry.getValue());
+      } else {
+        logger.log(Level.WARNING, String.format("Cannot generate test cases for %s as the declaring class %s does not have a trivial constructor", mi.getName(), mi.getClassName()));
+      }
+    }
+
+    return result;
   }
 
   private Object instanceFromClassname(String name, Object[] args) {
@@ -697,9 +591,9 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
   private class ArgumentSummary {
 
     /**
-     * Mapping symbolic arguments to their concrete values
+     * Mapping symbolic arguments to their symbols
      */
-    public Map<LocalVarInfo, ArgumentWrapper> symbolicArgs;
+    public Map<LocalVarInfo, SymbolicArgumentWrapper> symbolicArgs;
 
     /**
      * Mapping concrete arguments to their values
@@ -724,9 +618,9 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
       if (symbolicArgs.size() > 0) {
         builder.append("\tSymbolic arguments:\n");
-        for (Map.Entry<LocalVarInfo, ArgumentWrapper> entry : symbolicArgs.entrySet()) {
+        for (Map.Entry<LocalVarInfo, SymbolicArgumentWrapper> entry : symbolicArgs.entrySet()) {
           LocalVarInfo var = entry.getKey();
-          ArgumentWrapper wrapper = entry.getValue();
+          SymbolicArgumentWrapper wrapper = entry.getValue();
           builder.append('\t').append(var.getName()).append(":\t").append(wrapper.solution()).append("\n");
         }
       }
@@ -745,13 +639,13 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   }
 
-  private static interface ArgumentWrapper {
+  private static interface SymbolicArgumentWrapper {
 
     public Object solution();
 
     public void setDefault();
 
-    public static ArgumentWrapper wrapper(LocalVarInfo var, StackFrame frame) {
+    public static SymbolicArgumentWrapper wrapper(LocalVarInfo var, StackFrame frame) {
       if (Types.isArray(var.getSignature())) {
         int ref = frame.getLocalVariable(var.getSlotIndex());
         ElementInfo ei = VM.getVM().getElementInfo(ref);
@@ -782,7 +676,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
     }
   }
 
-  private static class SymIntWrapper implements ArgumentWrapper {
+  private static class SymIntWrapper implements SymbolicArgumentWrapper {
 
     private SymbolicInteger symint;
 
@@ -804,7 +698,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   }
 
-  private static class SymBollWrapper implements ArgumentWrapper {
+  private static class SymBollWrapper implements SymbolicArgumentWrapper {
 
     private SymbolicInteger symint;
 
@@ -824,7 +718,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   }
 
-  private static class SymRealWrapper implements ArgumentWrapper {
+  private static class SymRealWrapper implements SymbolicArgumentWrapper {
 
     private SymbolicReal symreal;
 
@@ -846,7 +740,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   }
 
-  private static class SymArrayWrapper implements ArgumentWrapper {
+  private static class SymArrayWrapper implements SymbolicArgumentWrapper {
 
     private ArrayExpression symArray;
 
@@ -866,14 +760,14 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
   }
 
-  private static class PartialSymArrayWrapper implements ArgumentWrapper {
+  private static class PartialSymArrayWrapper implements SymbolicArgumentWrapper {
 
     ElementInfo ei;
-    ArgumentWrapper[] elements;
+    SymbolicArgumentWrapper[] elements;
 
     public PartialSymArrayWrapper(ElementInfo ei) {
       this.ei = ei;
-      elements = new ArgumentWrapper[ei.arrayLength()];
+      elements = new SymbolicArgumentWrapper[ei.arrayLength()];
       collectVars();
     }
 
@@ -922,7 +816,7 @@ public class SymbolicTestGeneratorListener extends ListenerAdapter {
 
     @Override
     public void setDefault() {
-      for (ArgumentWrapper element : elements) {
+      for (SymbolicArgumentWrapper element : elements) {
         element.setDefault();
       }
     }

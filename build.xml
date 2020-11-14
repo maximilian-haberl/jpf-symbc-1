@@ -117,7 +117,9 @@
 	  <javac srcdir="src/main" destdir="build/main"
 		  debug="${debug}" source="${src_level}" deprecation="${deprecation}"
 		  classpathref="lib.path"
-		  includeantruntime="false"/>
+		  includeantruntime="false">
+		<compilerarg value="-Xlint:unchecked"/>
+	  </javac>
   </target>
 
   <target name="-compile-peers" if="have_peers" depends="-compile-main" >
@@ -125,7 +127,9 @@
 	  <javac srcdir="src/peers" destdir="build/peers"
 		  debug="${debug}" source="${src_level}" deprecation="${deprecation}"
 		  classpathref="lib.path"
-		  includeantruntime="false"/>
+		  includeantruntime="false">
+		<compilerarg value="-Xlint:unchecked"/>
+	  </javac>
   </target>
 
   <target name="-compile-classes" if="have_classes" depends="-compile-annotations,-compile-main" >

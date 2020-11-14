@@ -10,10 +10,12 @@ import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.util.JPFLogger;
 import gov.nasa.jpf.vm.ElementInfo;
 import gov.nasa.jpf.vm.LocalVarInfo;
+import gov.nasa.jpf.vm.MethodInfo;
 import gov.nasa.jpf.vm.Types;
 import java.io.CharArrayWriter;
 import java.io.Writer;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -22,17 +24,33 @@ import java.util.logging.Level;
  */
 public class JUnit5Formatter extends TestcaseFormatter {
 
+  private static final int NO_MESSAGE = 0, SIMPLE_MESSAGE = 1, FULL_MESSAGE = 2;
+
   private final String NL = System.lineSeparator();
   private int testCaseCount = 0;
-  private boolean fullArgs, assertMessage;
+  private final String packageName, className;
+  private int messageLevel;
   private int indents;
   private JPFLogger logger = JPF.getLogger("gov.nasa.jpf.symbc.testgeneration.JUnit5Formatter");
 
   public JUnit5Formatter(Config config) {
     super(config);
 
-    fullArgs = config.getBoolean("formatter.fullArgs", false);
-    assertMessage = config.getBoolean("formatter.message", false);
+    String abr = config.getString("SymbolicTestGeneratorListener.abbreviation", "SymbolicTestGeneratorListener");
+
+    packageName = config.getString(abr + ".formatter.package");
+    className = config.getString(abr + ".formatter.class_name", "Testcases");
+    String message = config.getString(abr + ".formatter.message", "");
+    messageLevel = NO_MESSAGE;
+    if (message.equalsIgnoreCase("none")) {
+      messageLevel = NO_MESSAGE;
+    } else if (message.equalsIgnoreCase("simple")) {
+      messageLevel = SIMPLE_MESSAGE;
+    } else if (message.equalsIgnoreCase("full")) {
+      messageLevel = FULL_MESSAGE;
+    }
+
+    indents = 0;
   }
 
   @Override
@@ -47,6 +65,11 @@ public class JUnit5Formatter extends TestcaseFormatter {
     return cw.toString();
   }
 
+  @Override
+  public void format(Map<MethodInfo, Set<TestCase>> tests, Writer writer) {
+    formatAll(tests, writer);
+  }
+
   /**
    * Formats a call to the method under test onto the writer. For dynamic
    * methods it is assumed that the instance is called 'instance' For static
@@ -59,11 +82,15 @@ public class JUnit5Formatter extends TestcaseFormatter {
    */
   protected IndentableWriter formatCall(IndentableWriter writer, TestCase test) {
     boolean dynamic = !test.method.isStatic();
+    String className = test.method.getClassName();
     int start = 0;
 
     if (dynamic) {
-      writer.append("instance.");
+      //we have to create a new object to call the method on
+      writer.append("new ").append(className).append("().");
       start = 1;
+    } else {
+      writer.append(className).append(".");
     }
 
     writer.append(test.method.getName()).append("(");
@@ -92,7 +119,20 @@ public class JUnit5Formatter extends TestcaseFormatter {
   protected IndentableWriter formatDeclaration(IndentableWriter writer, TestCase test) {
     writer.indent(indents).append("//Testing method ").append(test.method.getName()).append(NL);
     writer.indent(indents).append("@Test").append(NL);
-    writer.indent(indents).append("public void test").append(testCaseCount++).append("(){").append(NL);
+    writer.indent(indents).append("public void test").append(testCaseCount++).append("()");
+
+    String[] exceptions = test.method.getThrownExceptionClassNames();
+    if (!test.didThrow &&  exceptions != null && exceptions.length > 0) {
+      writer.append(" throws ");
+      for (int i = 0; i < exceptions.length; i++) {
+        if (i>0) {
+          writer.append(", ");
+        }
+        writer.append(exceptions[i]);
+      }
+    }
+
+    writer.append("{").append(NL);
     return writer;
   }
 
@@ -100,9 +140,9 @@ public class JUnit5Formatter extends TestcaseFormatter {
     writer.append("\"");
     writer.append("Ein Test für die Methode ").append(test.method.getName()).append(" ist fehlgeschlagen.");
 
-    if (fullArgs) {
+    if (messageLevel == FULL_MESSAGE) {
       //append the values of all variables
-      writer.append(" Input:\\n");
+      writer.append("\\nInput:\\n");
 
       int start = 0;
       if (!test.method.isStatic()) {
@@ -110,13 +150,19 @@ public class JUnit5Formatter extends TestcaseFormatter {
       }
 
       LocalVarInfo[] lvi = test.method.getArgumentLocalVars();
-      for (int i = 0; i < lvi.length; i++) {
+      for (int i = start; i < lvi.length; i++) {
         LocalVarInfo var = lvi[i];
         if (i > start) {
           writer.append("\\n");
         }
 
-        writer.append(var.getName()).append(":\\t").append(test.args.get(var));
+        Object val = test.args.get(var);
+        writer.append(var.getName()).append(":\\t");
+        if (val.getClass().isArray()) {
+          formatArray(writer, val);
+        } else {
+          writer.append(val);
+        }
 
       }
     }
@@ -187,8 +233,13 @@ public class JUnit5Formatter extends TestcaseFormatter {
     writer.indent(indents).append(test.method.getReturnTypeName()).append(" result = ");
     formatCall(writer, test).append(";").append(NL);
 
-    writer.indent(indents).append("assertEquals(expected, result");
-    if (assertMessage) {
+    if (test.method.getReturnTypeCode() == Types.T_ARRAY) {
+      writer.indent(indents).append("assertArrayEquals(expected, result");
+    }else{
+      writer.indent(indents).append("assertEquals(expected, result");
+    }
+    
+    if (messageLevel > NO_MESSAGE) {
       writer.append(", ");
       formatAssertMessage(writer, test).append(");").append(NL);
     } else {
@@ -204,9 +255,9 @@ public class JUnit5Formatter extends TestcaseFormatter {
     writer.indent(indents).append("assertThrows(").append(NL);
     writer.indent(indents + 2).append(exception.getClassInfo().getName()).append(".class,").append(NL);
     writer.indent(indents + 2).append("() -> {");
-    formatCall(writer, test).append("}");
+    formatCall(writer, test).append(";}");
 
-    if (assertMessage) {
+    if (messageLevel > NO_MESSAGE) {
       writer.append(",").append(NL).indent(indents + 2);
       formatAssertMessage(writer, test);
     }
@@ -226,23 +277,15 @@ public class JUnit5Formatter extends TestcaseFormatter {
   }
 
   protected void formatTestCase(IndentableWriter writer, TestCase test) {
-    StringBuilder builder = new StringBuilder();
-    String className = test.method.getClassName();
-    boolean dynamic = !test.method.isStatic();
-    indents = 1;
-
     formatDeclaration(writer, test);
 
     //one additional indent for the method body
     indents++;
 
     formatReferenceTypes(writer, test);
+    //test.method.getThrownExceptionClassNames();
 
     //creating an instance for dynamic methods
-    if (dynamic) {
-      writer.indent(indents).append(className).append(" instance = new ").append(className).append("();").append(NL);
-    }
-
     if (test.didThrow) {
       formatThrows(writer, test);
     } else if (test.method.getReturnTypeCode() != Types.T_VOID) {
@@ -262,6 +305,31 @@ public class JUnit5Formatter extends TestcaseFormatter {
    */
   public void resetTestCounter() {
     testCaseCount = 0;
+  }
+
+  public void formatAll(Map<MethodInfo, Set<TestCase>> tests, Writer writer) {
+    IndentableWriter indenter = new IndentableWriter(writer);
+
+    if (packageName != null) {
+      indenter.indent(indents).append("package ").append(packageName).append(";").append(NL).append(NL);
+    }
+
+    indenter.indent(indents).append("import org.junit.jupiter.api.Test;").append(NL);
+    indenter.indent(indents).append("import static org.junit.jupiter.api.Assertions.*;").append(NL);
+    indenter.append(NL);
+
+    //TODO: fix class name
+    indenter.indent(indents).append("public class ").append(className).append(" {").append(NL);
+    indents++;
+
+    for (Map.Entry<MethodInfo, Set<TestCase>> entry : tests.entrySet()) {
+      for (TestCase testCase : entry.getValue()) {
+        formatTestCase(indenter, testCase);
+      }
+    }
+
+    indents--;
+    indenter.indent(indents).append("}");
   }
 
 }

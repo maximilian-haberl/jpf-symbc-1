@@ -43,3 +43,9 @@ You can then try to run some examples by selecting a .jpf file from the "example
 In particular you should select: "run-JPF-symbc" to run Symbolic PathFinder on your example (configuration "run-JPF-symbc-mac" is tailored for Mac).
 
 Good luck!
+
+Test Generation:
+----------------
+How to install JPF: https://github.com/javapathfinder/jpf-core/wiki/How-to-install-JPF
+When JPF and JPF-symbolic are built and the sites.properties exists we can run JPF as described in the Wiki.
+An basic example configuration for test generation in included in the project directory.
