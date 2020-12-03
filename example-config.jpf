@@ -1,0 +1,56 @@
+# dependencies:
+@using jpf-symbc
+
+#Fully qualified name of the target class (e.g. main.Main) 
+target = #TODO 
+
+#--- classpaths:
+#classpath of the sample solution
+classpath = #TODO
+#sourcepath of the sample solution
+sourcepath = #TODO 
+
+#--- symbolic execution
+search.multiple_errors=true
+listener = gov.nasa.jpf.symbc.testgeneration.SymbolicTestGeneratorListener
+#max search depth
+search.depth_limit = 15
+symbolic.optimizechoices = true
+#constraint solver to use
+symbolic.dp = z3 
+
+#--- reporting settings
+report.file.class = gov.nasa.jpf.report.GenericFilePublisher
+report.publisher=file,console
+#path to the output file
+report.file.file = #TODO
+
+#--- constraints on datatypes
+#similar for other datatypes
+symbolic.min_int = -100
+symbolic.max_int = 100
+
+#--- what method to check
+symbolic.method = #TODO 
+#methods have to be specified with their fully qualified name
+#for multiple mathods use ',' without a space between the different methods
+#all arguments have to be either symbolic (sym) or concrete (con)
+#argument delimiter is '#'
+#see the example below:
+#symbolic.method = main.Main.someMethod(sym#sym#con),main.Main.someOtherMethod(sym)
+
+
+#--- settings for test generation
+#if no abbreviation is used, all options use SymbolicTestGeneratorListener
+SymbolicTestGeneratorListener.abbreviation = testgen
+#turns on the optimization feature (default: false)
+testgen.optimize = true
+#other formatters can be used
+#testgen.formatter = gov.nasa.jpf.symbc.testgeneratiom.JUnit5Formatter
+
+#sets the level for the assertion message; available levels are none, simple, full
+testgen.formatter.message = none
+#package name (remove if no package)
+testgen.formatter.package = #TODO 
+#name of the class generated
+testgen.formatter.class_name = #TODO
